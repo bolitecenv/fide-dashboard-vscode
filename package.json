@@ -1,0 +1,59 @@
+{
+  "name": "fide-embedded-dashboard",
+  "displayName": "FIDE Embedded Dashboard",
+  "description": "Dashboard for managing embedded development projects with board selection and log viewer",
+  "version": "0.0.1",
+  "publisher": "fide",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "fide.openDashboard",
+        "title": "FIDE: Open Dashboard",
+        "category": "FIDE"
+      },
+      {
+        "command": "fide.openDltViewer",
+        "title": "FIDE: Open DLT Timeline Viewer",
+        "category": "FIDE"
+      }
+    ],
+    "configuration": {
+      "title": "FIDE Embedded Dashboard",
+      "properties": {
+        "fide.backendUrl": {
+          "type": "string",
+          "default": "http://localhost:3000",
+          "description": "Backend API URL"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src --ext ts",
+    "test": "node ./out/test/runTest.js"
+  },
+  "devDependencies": {
+    "@types/node": "^18.19.130",
+    "@types/vscode": "^1.109.0",
+    "@typescript-eslint/eslint-plugin": "^6.13.0",
+    "@typescript-eslint/parser": "^6.13.0",
+    "eslint": "^8.54.0",
+    "typescript": "^5.3.2"
+  },
+  "dependencies": {
+    "axios": "^1.6.2",
+    "ws": "^8.19.0"
+  }
+}

@@ -1,0 +1,247 @@
+  const renderDltView = () => {
+    if (isLoadingWasm) {
+      return (
+        <div className="view-container">
+          <div className="loading">
+            <div className="spinner"></div>
+            <p>Loading DLT Parser...</p>
+          </div>
+        </div>
+      );
+    }
+
+    // Calculate timeline bounds
+    const minTime = traceSpans.length > 0 
+      ? Math.min(...traceSpans.map(s => s.startTime)) 
+      : 0;
+    const maxTime = traceSpans.length > 0 
+      ? Math.max(...traceSpans.map(s => s.endTime)) 
+      : 1000;
+    const timeRange = maxTime - minTime || 1000;
+    
+    // Group spans by ID for tracks
+    const tracks = new Map<string, TraceSpan[]>();
+    traceSpans.forEach(span => {
+      if (!tracks.has(span.id)) {
+        tracks.set(span.id, []);
+      }
+      tracks.get(span.id)!.push(span);
+    });
+
+    const getXPosition = (timestamp: number) => {
+      return ((timestamp - minTime) / timeRange) * 100;
+    };
+
+    const getWidth = (duration: number) => {
+      return (duration / timeRange) * 100;
+    };
+
+    return (
+      <div className="view-container timeline-layout">
+        <div className="dlt-toolbar">
+          <div className="timeline-status">
+            <div className={`status-indicator ${wsConnected ? 'connected' : 'disconnected'}`}>
+              <span className="status-dot"></span>
+              <span>{wsConnected ? 'Connected' : 'Disconnected'} - ws://localhost:8083</span>
+            </div>
+          </div>
+
+          <div className="timeline-controls">
+            <button 
+              onClick={() => setTimelineZoom(Math.max(0.1, timelineZoom - 0.2))}
+              className="button secondary"
+            >
+              🔍− Zoom Out
+            </button>
+            <button 
+              onClick={() => setTimelineZoom(timelineZoom + 0.2)}
+              className="button secondary"
+            >
+              🔍+ Zoom In
+            </button>
+            <button onClick={handleClearDlt} className="button secondary">
+              🗑️ Clear
+            </button>
+          </div>
+        </div>
+
+        <div className="dlt-main-layout">
+          {/* Left side: Register and Call Graph */}
+          <div className="dlt-left-panel">
+            {/* Register View */}
+            <div className="register-panel">
+              <div className="panel-header">
+                <h3>📟 Registers</h3>
+                <span className="badge">{registers.size}</span>
+              </div>
+              <div className="register-list">
+                {registers.size === 0 ? (
+                  <div className="empty-message">
+                    <p>No registers received</p>
+                    <p className="hint">Format: REG:&lt;name&gt;:&lt;value&gt;</p>
+                  </div>
+                ) : (
+                  Array.from(registers.values()).map((reg, idx) => (
+                    <div key={idx} className="register-item">
+                      <div className="register-name">{reg.name}</div>
+                      <div className="register-value">{reg.value}</div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
+            {/* Call Graph View */}
+            <div className="callgraph-panel">
+              <div className="panel-header">
+                <h3>📞 Call Graph</h3>
+                <span className="badge">{callStacks.size} threads</span>
+              </div>
+              <div className="callgraph-list">
+                {callStacks.size === 0 ? (
+                  <div className="empty-message">
+                    <p>No call events received</p>
+                    <p className="hint">Format: &lt;ThreadID&gt;:&lt;Function&gt;:&lt;Time&gt;:&lt;start|end&gt;</p>
+                  </div>
+                ) : (
+                  Array.from(callStacks.values()).map((stack, idx) => (
+                    <div 
+                      key={idx} 
+                      className={`thread-stack ${selectedThreadId === stack.threadId ? 'selected' : ''}`}
+                      onClick={() => setSelectedThreadId(stack.threadId === selectedThreadId ? null : stack.threadId)}
+                    >
+                      <div className="thread-header">
+                        <span className="thread-id">Thread {stack.threadId}</span>
+                        <span className="call-count">{stack.calls.filter(c => c.type === 'start').length} calls</span>
+                      </div>
+                      {selectedThreadId === stack.threadId && (
+                        <div className="call-stack-view">
+                          {stack.calls.filter(c => c.type === 'start').map((call, callIdx) => (
+                            <div 
+                              key={callIdx} 
+                              className="call-item"
+                              style={{ 
+                                marginLeft: `${(call.depth || 0) * 20}px`,
+                                width: `calc(100% - ${(call.depth || 0) * 20}px)`
+                              }}
+                            >
+                              <div className="call-function">{call.functionName}</div>
+                              <div className="call-time">{call.timestamp.toFixed(2)}ms</div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Right side: Timeline and Logs */}
+          <div className="dlt-right-panel">
+            <div className="timeline-gantt-container">
+              {traceSpans.length === 0 ? (
+                <div className="empty-state">
+                  <div className="empty-icon">📡</div>
+                  <h3>Waiting for trace data...</h3>
+                  <p>Connect to WebSocket at port 8083</p>
+                  <p className="hint">Format: &lt;ID&gt;:&lt;Timestamp&gt;:&lt;Start|End&gt;:&lt;metadata&gt;</p>
+                </div>
+              ) : (
+                <>
+                  {/* Timeline ruler */}
+                  <div className="timeline-ruler">
+                    <div className="ruler-track">
+                      <div className="ruler-label">Time</div>
+                      <div className="ruler-ticks">
+                        {Array.from({ length: 10 }, (_, i) => {
+                          const time = minTime + (timeRange * i / 9);
+                          return (
+                            <div 
+                              key={i} 
+                              className="tick" 
+                              style={{ left: `${(i / 9) * 100}%` }}
+                            >
+                              <div className="tick-label">
+                                {time > 1000 ? (time / 1000).toFixed(2) + 's' : time.toFixed(0) + 'ms'}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Trace tracks */}
+                  <div className="timeline-tracks">
+                    {Array.from(tracks.entries()).map(([trackId, spans]) => (
+                      <div 
+                        key={trackId} 
+                        className={`timeline-track ${selectedTrackId === trackId ? 'selected' : ''}`}
+                        onClick={() => setSelectedTrackId(trackId)}
+                      >
+                        <div className="track-label">
+                          <div className="track-id">{trackId}</div>
+                          <div className="track-count">{spans.length} spans</div>
+                        </div>
+                        <div className="track-timeline">
+                          {spans.map((span, idx) => {
+                            const left = getXPosition(span.startTime);
+                            const width = getWidth(span.duration);
+                            return (
+                              <div
+                                key={idx}
+                                className="trace-span"
+                                style={{
+                                  left: `${left}%`,
+                                  width: `${Math.max(width, 0.5)}%`,
+                                  backgroundColor: span.color,
+                                }}
+                                title={`${span.metadata}\nDuration: ${span.duration.toFixed(2)}ms\nStart: ${span.startTime.toFixed(2)}`}
+                              >
+                                {width > 5 && (
+                                  <span className="span-label">
+                                    {span.duration.toFixed(1)}ms
+                                  </span>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* Log panel at bottom - always visible */}
+            <div className="log-panel">
+              <div className="log-header">
+                <h3>📋 {selectedTrackId ? `Logs: ${selectedTrackId}` : 'Logs (Select a track above)'}</h3>
+              </div>
+              <div className="log-list">
+                {selectedTrackId && tracks.get(selectedTrackId) ? (
+                  tracks.get(selectedTrackId)!.map((span, idx) => (
+                    <div key={idx} className="log-entry">
+                      <div className="log-index">#{idx + 1}</div>
+                      <div className="log-timestamp">{span.startTime.toFixed(2)}ms</div>
+                      <div className="log-duration" style={{ color: span.color }}>
+                        ⏱ {span.duration.toFixed(2)}ms
+                      </div>
+                      <div className="log-metadata">{span.metadata}</div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="log-empty">
+                    <p>Click on a track in the timeline to view detailed logs</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
