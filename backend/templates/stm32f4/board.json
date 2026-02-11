@@ -1,0 +1,8 @@
+{
+  "id": "stm32f4_discovery",
+  "name": "STM32F4 Discovery",
+  "mcu": "STM32F407VG",
+  "architecture": "ARM Cortex-M4",
+  "ram_kb": 192,
+  "flash_kb": 1024
+}

@@ -1,0 +1,8 @@
+{
+  "id": "esp32_devkitc",
+  "name": "ESP32 DevKitC",
+  "mcu": "ESP32-WROOM-32",
+  "architecture": "Xtensa LX6",
+  "ram_kb": 520,
+  "flash_kb": 4096
+}

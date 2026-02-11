@@ -13,16 +13,49 @@
   "activationEvents": [],
   "main": "./out/extension.js",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "fide-embedded",
+          "title": "FIDE Embedded",
+          "icon": "resources/fide-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "fide-embedded": [
+        {
+          "id": "fide.dashboardView",
+          "name": "Dashboard"
+        },
+        {
+          "id": "fide.dltViewerView",
+          "name": "DLT Viewer"
+        },
+        {
+          "id": "fide.aiAgentView",
+          "name": "AI Agent"
+        }
+      ]
+    },
     "commands": [
       {
         "command": "fide.openDashboard",
         "title": "FIDE: Open Dashboard",
-        "category": "FIDE"
+        "category": "FIDE",
+        "icon": "$(circuit-board)"
       },
       {
         "command": "fide.openDltViewer",
         "title": "FIDE: Open DLT Timeline Viewer",
-        "category": "FIDE"
+        "category": "FIDE",
+        "icon": "$(graph-line)"
+      },
+      {
+        "command": "fide.openAiAgent",
+        "title": "FIDE: Open AI Agent",
+        "category": "FIDE",
+        "icon": "$(hubot)"
       }
     ],
     "configuration": {
@@ -38,7 +71,7 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
-    "compile": "tsc -p ./",
+    "compile": "tsc -p ./ && cp src/dlt-viewer/webview.js out/dlt-viewer/webview.js && cp src/dlt-viewer/webview.css out/dlt-viewer/webview.css && cp src/ai-agent/webview.js out/ai-agent/webview.js && cp src/ai-agent/webview.css out/ai-agent/webview.css && cp src/dashboard/webview.js out/dashboard/webview.js && cp src/dashboard/webview.css out/dashboard/webview.css",
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src --ext ts",

@@ -1,0 +1,8 @@
+{
+  "id": "motor_sim",
+  "name": "Motor Simulator (Rust)",
+  "mcu": "Virtual",
+  "architecture": "Rust Simulation",
+  "ram_kb": 0,
+  "flash_kb": 0
+}

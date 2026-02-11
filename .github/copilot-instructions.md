@@ -12,8 +12,10 @@ VS Code extension for managing embedded development projects with integrated das
 3. User creates project → Backend generates template → Extension downloads files to local filesystem → Creates `.code-workspace` file
 
 **Key Components**:
-- [src/extension.ts](src/extension.ts) - Entry point: registers `fide.openDashboard` command
+- [src/extension.ts](src/extension.ts) - Entry point: registers `fide.openDashboard`, `fide.openDltViewer`, `fide.openAiAgent` commands
 - [src/dashboardViewProvider.ts](src/dashboardViewProvider.ts) - Main logic: webview management, API communication, file operations
+- [src/dlt-viewer/dltViewerProvider.ts](src/dlt-viewer/dltViewerProvider.ts) - DLT timeline viewer with trace and call stack visualization
+- [src/ai-agent/aiAgentProvider.ts](src/ai-agent/aiAgentProvider.ts) - AI-powered workspace assistant with file operations and command execution
 
 ## Backend Integration Pattern
 
@@ -110,3 +112,21 @@ Default configuration includes:
 - Nordic nRF52840 DK (ARM Cortex-M4, 256KB RAM, 1MB Flash)
 
 Board data fetched dynamically from backend - extension doesn't hardcode board list.
+
+## AI Agent Integration
+
+**Claude API** (Anthropic, default: `https://api.anthropic.com/v1/messages`):
+- Model: `claude-3-5-sonnet-20241022`
+- Max tokens: 4096
+- Tool calling enabled for workspace operations
+
+**Available Tools**:
+- `search_files` - Find files using glob patterns
+- `read_file` - Read file contents
+- `write_file` - Create/update files
+- `execute_command` - Run shell commands (cargo, make, npm, etc.)
+- `list_directory` - Browse directory contents
+
+**Tool Execution Pattern**: AI requests tool use → Extension executes → Returns result → AI continues or responds
+
+**Security Note**: API token currently hardcoded - should be moved to VS Code settings (`fide.aiAgent.apiToken`).

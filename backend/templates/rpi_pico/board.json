@@ -1,0 +1,8 @@
+{
+  "id": "rpi_pico",
+  "name": "Raspberry Pi Pico",
+  "mcu": "RP2040",
+  "architecture": "ARM Cortex-M0+",
+  "ram_kb": 264,
+  "flash_kb": 2048
+}

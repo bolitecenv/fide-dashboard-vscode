@@ -1,0 +1,8 @@
+{
+  "id": "nrf52840_dk",
+  "name": "Nordic nRF52840 DK",
+  "mcu": "nRF52840",
+  "architecture": "ARM Cortex-M4",
+  "ram_kb": 256,
+  "flash_kb": 1024
+}
