@@ -77,7 +77,11 @@ export function updateChartConfig(chartId, field, value) {
     const chart = charts.find(c => c.id === chartId);
     if (chart) {
         chart[field] = value;
-        renderChart(chart);
+        if (field === 'series' || field === 'autoScale') {
+            renderAllCharts();
+        } else {
+            renderChart(chart);
+        }
     }
 }
 
@@ -140,9 +144,17 @@ export function renderChart(chart) {
     const canvas = document.getElementById(`chart-canvas-${chart.id}`);
     if (!canvas) return;
 
+    // Match canvas buffer to display size for crisp rendering
+    const rect = canvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = rect.width * dpr;
+    canvas.height = rect.height * dpr;
+
     const ctx = canvas.getContext('2d');
-    const width = canvas.width;
-    const height = canvas.height;
+    ctx.scale(dpr, dpr);
+    
+    const width = rect.width;
+    const height = rect.height;
     const padding = { top: 20, right: 20, bottom: 40, left: 60 };
     const plotWidth = width - padding.left - padding.right;
     const plotHeight = height - padding.top - padding.bottom;

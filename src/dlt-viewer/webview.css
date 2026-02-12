@@ -106,7 +106,7 @@ body {
     min-width: 300px;
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
     z-index: 1000;
-    pointer-events: none;
+    pointer-events: auto;
 }
 
 .config-panel.active {
@@ -469,24 +469,33 @@ button.secondary:hover {
     gap: 20px;
 }
 
-.chart-item {
+.chart-item,
+.chart-container {
     background: var(--vscode-input-background);
     border: 1px solid var(--vscode-panel-border);
     border-radius: 6px;
     padding: 15px;
 }
 
-.chart-item-header {
+.chart-item-header,
+.chart-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
     margin-bottom: 10px;
 }
 
-.chart-item-header h4 {
+.chart-item-header h4,
+.chart-header .chart-title-input {
     margin: 0;
     font-size: 14px;
     color: var(--vscode-foreground);
+    background: var(--vscode-input-background);
+    border: 1px solid var(--vscode-input-border);
+    padding: 4px 8px;
+    border-radius: 3px;
+    flex: 1;
+    margin-right: 8px;
 }
 
 .chart-item-controls {
@@ -508,16 +517,55 @@ button.secondary:hover {
 }
 
 .chart-config {
-    display: none;
+    display: block;
     margin-top: 10px;
+    margin-bottom: 10px;
     padding: 10px;
     background: var(--vscode-editor-background);
     border-radius: 4px;
     border: 1px solid var(--vscode-panel-border);
 }
 
-.chart-config.active {
+.chart-config label {
+    font-size: 12px;
+    color: var(--vscode-descriptionForeground);
+    margin-bottom: 4px;
     display: block;
+}
+
+.chart-config input[type="text"],
+.chart-config input[type="number"] {
+    width: 100%;
+    padding: 6px;
+    margin-bottom: 8px;
+    background: var(--vscode-input-background);
+    border: 1px solid var(--vscode-input-border);
+    color: var(--vscode-input-foreground);
+    border-radius: 3px;
+    font-size: 12px;
+}
+
+.chart-config input:focus {
+    outline: none;
+    border-color: var(--vscode-focusBorder);
+}
+
+.chart-scale-config {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.chart-scale-config label {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-bottom: 0;
+}
+
+.chart-series-input {
+    width: 100%;
 }
 
 .config-row {
