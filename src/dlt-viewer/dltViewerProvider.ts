@@ -237,16 +237,24 @@ export class DltViewerProvider {
                 <!-- Log Panel -->
                 <div class="log-panel">
                     <div class="log-header">
-            onfiguration
-        let wsPort = 8083;
-        let packetType = 'text'; // 'text' or 'dlt'
-        
-        // C            <h3 id="logTitle">📋 Logs (Select a track above)</h3>
+                        <h3 id="logTitle">📋 Logs (Select a track above)</h3>
                     </div>
                     <div class="log-list" id="logList">
                         <div class="log-empty">
                             <p>Click on a track in the timeline to view detailed logs</p>
                         </div>
+                    </div>
+                </div>
+
+                <!-- DLT Statistics Panel (Bottom Right) -->
+                <div class="dlt-stats-panel" id="dltStatsPanel">
+                    <div class="stats-item">
+                        <span class="stats-label">DLT Received:</span>
+                        <span class="stats-value" id="dltReceivedCount">0</span>
+                    </div>
+                    <div class="stats-item">
+                        <span class="stats-label">Incorrect:</span>
+                        <span class="stats-value error" id="dltIncorrectCount">0</span>
                     </div>
                 </div>
             </div>

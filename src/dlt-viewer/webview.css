@@ -793,3 +793,40 @@ button.secondary:hover {
     0% { transform: rotate(0deg); }
     100% { transform: rotate(360deg); }
 }
+/* DLT Statistics Panel */
+.dlt-stats-panel {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    background: var(--vscode-editor-background);
+    border: 1px solid var(--vscode-panel-border);
+    border-radius: 6px;
+    padding: 10px 15px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+    font-size: 12px;
+    z-index: 1000;
+}
+
+.stats-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.stats-label {
+    color: var(--vscode-descriptionForeground);
+    font-weight: 500;
+}
+
+.stats-value {
+    color: var(--vscode-charts-green);
+    font-weight: bold;
+    font-family: var(--vscode-editor-font-family);
+}
+
+.stats-value.error {
+    color: var(--vscode-errorForeground);
+}

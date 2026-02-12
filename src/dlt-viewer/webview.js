@@ -15,6 +15,11 @@ let timelineView = 'trace'; // 'trace', 'calls', or 'charts'
 let wsPort = 8083;
 let packetType = 'text'; // 'text' or 'dlt'
 
+// DLT Packet Buffer and Statistics
+let dltPacketBuffer = new Uint8Array(0); // Buffer for incomplete DLT packets
+let dltMessagesReceived = 0; // Total DLT messages successfully parsed
+let dltMessagesIncorrect = 0; // Total DLT messages with errors
+
 // Chart data
 let charts = [];
 let chartDataSeries = new Map(); // Map<chartId, Map<name, Array<{x, y}>>>
@@ -83,6 +88,9 @@ function connectWebSocket() {
 
     const wsUrl = `ws://localhost:${wsPort}`;
     ws = new WebSocket(wsUrl);
+    
+    // Set binary type to arraybuffer for DLT binary packets
+    ws.binaryType = 'arraybuffer';
 
     ws.onopen = () => {
         wsConnected = true;
@@ -94,6 +102,7 @@ function connectWebSocket() {
         if (packetType === 'text') {
             handleMessage(event.data);
         } else {
+            // event.data will be ArrayBuffer when binaryType = 'arraybuffer'
             handleDltBinaryMessage(event.data);
         }
     };
@@ -177,20 +186,163 @@ function handleMessage(message) {
     }
 }
 
-function handleDltBinaryMessage(data) {
-    // TODO: Implement DLT binary format parser
-    // DLT format typically includes:
-    // - Standard header (4 bytes)
-    // - Extended header (10 bytes)
-    // - Payload
-    console.log('DLT binary message received (not yet implemented)', data);
+/**
+ * Parse DLT binary packet
+ * @param {Uint8Array} packet - Complete DLT packet data
+ * @returns {Object|null} Parsed DLT message or null if invalid
+ * 
+ * DLT Standard Header (4 bytes):
+ *   - HTYP (1 byte): Header Type
+ *   - MCNT (1 byte): Message Counter
+ *   - LEN (2 bytes): Length of complete packet
+ * 
+ * This function will be replaced with WASM parser implementation
+ */
+function parseDltPacket(packet) {
+    // TODO: WASM parser will be integrated here
+    // For now, this is a placeholder that validates minimum header
     
-    // For now, try to convert to text if possible
-    try {
-        const text = new TextDecoder().decode(data);
-        handleMessage(text);
-    } catch (e) {
-        console.error('Failed to decode DLT binary message', e);
+    if (packet.length < 4) {
+        return null; // Not enough data for standard header
+    }
+    
+    // Read packet length from bytes 2-3 (big-endian)
+    const packetLength = (packet[2] << 8) | packet[3];
+    
+    if (packet.length !== packetLength) {
+        return null; // Packet length mismatch
+    }
+    
+    // Extract basic header info
+    const htyp = packet[0];
+    const mcnt = packet[1];
+    
+    // Convert to hex string for debugging
+    const hexDump = Array.from(packet.slice(0, Math.min(32, packet.length)))
+        .map(b => b.toString(16).padStart(2, '0'))
+        .join('');
+    
+    // WASM parser will return structured data:
+    // {
+    //   timestamp: number,
+    //   appId: string,
+    //   contextId: string,
+    //   messageType: string,
+    //   payload: string
+    // }
+    
+    return {
+        timestamp: Date.now(),
+        appId: 'UNKNOWN',
+        contextId: 'UNKNOWN',
+        messageType: 'INFO',
+        htyp: `0x${htyp.toString(16).padStart(2, '0')}`,
+        mcnt: mcnt,
+        length: packetLength,
+        payload: `DLT packet [HTYP:0x${htyp.toString(16)}, MCNT:${mcnt}, LEN:${packetLength}] - First bytes: ${hexDump}${packet.length > 32 ? '...' : ''}`
+    };
+}
+
+/**
+ * Update DLT statistics display in the UI
+ */
+function updateDltStats() {
+    const receivedEl = document.getElementById('dltReceivedCount');
+    const incorrectEl = document.getElementById('dltIncorrectCount');
+    
+    if (receivedEl) {
+        receivedEl.textContent = dltMessagesReceived;
+    }
+    if (incorrectEl) {
+        incorrectEl.textContent = dltMessagesIncorrect;
+    }
+}
+
+function handleDltBinaryMessage(data) {
+    // Handle different data types that might come from WebSocket
+    let arrayBuffer;
+    
+    if (data instanceof ArrayBuffer) {
+        arrayBuffer = data;
+    } else if (data instanceof Blob) {
+        // If somehow we still get a Blob, convert it (shouldn't happen with binaryType='arraybuffer')
+        console.warn('⚠️ Received Blob instead of ArrayBuffer, converting...');
+        const reader = new FileReader();
+        reader.onload = () => handleDltBinaryMessage(reader.result);
+        reader.readAsArrayBuffer(data);
+        return;
+    } else if (typeof data === 'string') {
+        // If we get string data in DLT mode, something is wrong with config
+        console.error('❌ Received text data in DLT binary mode. Check packetType configuration.');
+        return;
+    } else {
+        console.error('❌ Unknown data type received:', typeof data);
+        return;
+    }
+    
+    // Append incoming data to buffer
+    const newData = new Uint8Array(arrayBuffer);
+    const combinedBuffer = new Uint8Array(dltPacketBuffer.length + newData.length);
+    combinedBuffer.set(dltPacketBuffer, 0);
+    combinedBuffer.set(newData, dltPacketBuffer.length);
+    dltPacketBuffer = combinedBuffer;
+    
+    console.log(`📦 Added ${newData.length} bytes to buffer, total buffer size: ${dltPacketBuffer.length} bytes`);
+    
+    // Process all complete packets in buffer
+    while (dltPacketBuffer.length >= 4) {
+        // Read packet length from DLT standard header (bytes 2-3, big-endian)
+        const packetLength = (dltPacketBuffer[2] << 8) | dltPacketBuffer[3];
+        
+        console.log(`🔍 Buffer has ${dltPacketBuffer.length} bytes, next packet expects ${packetLength} bytes`);
+        
+        // Validate packet length (sanity check: between 4 and 65535 bytes)
+        if (packetLength < 4 || packetLength > 65535) {
+            console.error('❌ Invalid DLT packet length:', packetLength);
+            dltMessagesIncorrect++;
+            updateDltStats();
+            // Discard invalid header and try to find next valid packet
+            dltPacketBuffer = dltPacketBuffer.slice(1);
+            continue;
+        }
+        
+        // Check if we have enough data for complete packet
+        if (dltPacketBuffer.length < packetLength) {
+            // Not enough data yet, wait for next WebSocket message
+            console.log(`⏳ Waiting for more data: have ${dltPacketBuffer.length}, need ${packetLength}`);
+            break;
+        }
+        
+        // Extract complete packet
+        const packet = dltPacketBuffer.slice(0, packetLength);
+        dltPacketBuffer = dltPacketBuffer.slice(packetLength);
+        
+        console.log(`✂️ Extracted complete packet (${packetLength} bytes), remaining buffer: ${dltPacketBuffer.length} bytes`);
+        
+        // Parse the packet (WASM parser will be used here)
+        try {
+            const parsedMessage = parseDltPacket(packet);
+            
+            if (parsedMessage) {
+                dltMessagesReceived++;
+                updateDltStats();
+                
+                // Process the parsed DLT message
+                // For now, just log it (will be integrated with timeline/trace view)
+                console.log('✅ DLT Message:', parsedMessage);
+                
+                // You can route this to trace timeline, logs, or other views
+                // handleMessage(parsedMessage.payload);
+            } else {
+                dltMessagesIncorrect++;
+                updateDltStats();
+                console.error('❌ Failed to parse DLT packet');
+            }
+        } catch (error) {
+            dltMessagesIncorrect++;
+            updateDltStats();
+            console.error('❌ Error parsing DLT packet:', error);
+        }
     }
 }
 
@@ -1417,3 +1569,68 @@ window.addEventListener('load', () => {
         connectWebSocket();
     }, 500);
 });
+// ============================================================================
+// TEST FUNCTION - DLT Packet Parser Testing
+// ============================================================================
+
+/**
+ * Test DLT packet parsing with real data from your WebSocket server
+ * Open browser console and run: testDltPackets()
+ */
+function testDltPackets() {
+    console.log('\n========================================');
+    console.log('🧪 DLT PACKET PARSER TEST');
+    console.log('========================================\n');
+    
+    // Reset statistics and buffer
+    dltPacketBuffer = new Uint8Array(0);
+    dltMessagesReceived = 0;
+    dltMessagesIncorrect = 0;
+    updateDltStats();
+    
+    // Real packet data from your WebSocket server
+    const testPackets = [
+        '3500002045435531645ed2b526014441310044433100',                    // 22 bytes (incomplete, expects 32)
+        '020f00000002000000003d00004e454355310000000e64575e6e4101444c5444', // 32 bytes (continues packet 1? or new?)
+        '3d020074454355310000000e646c06bc4101444c5444494e544d',             // 26 bytes (incomplete, expects 116)
+        '0002000054004170706c69636174696f6e494420274c4f472720726567697374', // Data continuation
+        '3d01002e454355310000001e646c1a6d31024c4f470054455354',             // 26 bytes (incomplete, expects 46)
+        '230000000100000000020000060068656c6c6f00',                         // 20 bytes
+        '3d02002e454355310000001e646c2dfe31024c4f470054455354230000000200', // 46 bytes (complete!)
+        '3d03002e454355310000001e646c41a331024c4f470054455354',             // 26 bytes (incomplete, expects 46)
+        '230000000300000000020000060068656c6c6f00',                         // 20 bytes
+        '3d04002e454355310000001e646c554431024c4f470054455354',             // 26 bytes
+        '230000000400000000020000060068656c6c6f00',                         // 20 bytes
+        '3500002745435531646cf28d26014441310044433100',                    // 22 bytes
+        '010f0000004c4f47005445535472656d6f3d030038454355310000000e646cf2', // 32 bytes
+    ];
+    
+    console.log(`📦 Processing ${testPackets.length} test packets...\\n`);
+    
+    let packetNum = 1;
+    testPackets.forEach(hexString => {
+        // Convert hex string to Uint8Array
+        const bytes = new Uint8Array(
+            hexString.match(/.{1,2}/g).map(byte => parseInt(byte, 16))
+        );
+        
+        console.log(`\\n--- Test Packet ${packetNum++} (${bytes.length} bytes) ---`);
+        console.log(`Hex: ${hexString}`);
+        
+        // Simulate WebSocket binary message
+        handleDltBinaryMessage(bytes.buffer);
+    });
+    
+    console.log('\\n========================================');
+    console.log('📊 FINAL STATISTICS');
+    console.log('========================================');
+    console.log(`✅ Successfully parsed: ${dltMessagesReceived}`);
+    console.log(`❌ Parse errors: ${dltMessagesIncorrect}`);
+    console.log(`📦 Remaining buffer: ${dltPacketBuffer.length} bytes`);
+    console.log('========================================\\n');
+}
+
+// Make test function globally accessible
+window.testDltPackets = testDltPackets;
+
+console.log('💡 DLT Viewer loaded! Run testDltPackets() in console to test packet parsing.');
