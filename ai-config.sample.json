@@ -1,5 +1,14 @@
 {
   "apiUrl": "https://api.anthropic.com/v1/messages",
   "apiKey": "YOUR_ANTHROPIC_API_KEY_HERE",
-  "model": "claude-sonnet-4-5-20250929"
+  "model": "claude-sonnet-4-5-20250929",
+  "authType": "anthropic"
 }
+
+// For OpenAI or OpenAI-compatible APIs (e.g., OpenRouter, local LLMs):
+// {
+//   "apiUrl": "https://api.openai.com/v1/chat/completions",
+//   "apiKey": "YOUR_OPENAI_API_KEY_HERE",
+//   "model": "gpt-4",
+//   "authType": "bearer"
+// }

@@ -2,6 +2,65 @@
 
 AI-powered workspace assistant that can search, read, edit files, and execute build commands.
 
+## Configuration
+
+The AI agent requires a configuration file `ai-config.json` in the extension root directory. Copy `ai-config.sample.json` and configure your preferred AI provider.
+
+### Anthropic Claude (Default)
+
+```json
+{
+  "apiUrl": "https://api.anthropic.com/v1/messages",
+  "apiKey": "sk-ant-api03-...",
+  "model": "claude-sonnet-4-5-20250929",
+  "authType": "anthropic"
+}
+```
+
+### OpenAI
+
+```json
+{
+  "apiUrl": "https://api.openai.com/v1/chat/completions",
+  "apiKey": "sk-...",
+  "model": "gpt-4",
+  "authType": "bearer"
+}
+```
+
+### OpenAI-Compatible APIs
+
+Any OpenAI-compatible API endpoint works with `authType: "bearer"`:
+
+**OpenRouter:**
+```json
+{
+  "apiUrl": "https://openrouter.ai/api/v1/chat/completions",
+  "apiKey": "sk-or-...",
+  "model": "anthropic/claude-3.5-sonnet",
+  "authType": "bearer"
+}
+```
+
+**Local LLMs (Ollama, LM Studio, etc.):**
+```json
+{
+  "apiUrl": "http://localhost:11434/v1/chat/completions",
+  "apiKey": "not-needed",
+  "model": "qwen2.5-coder:32b",
+  "authType": "bearer"
+}
+```
+
+### Configuration Fields
+
+- **`apiUrl`**: API endpoint URL
+- **`apiKey`**: Your API key (use any string for local models that don't require auth)
+- **`model`**: Model identifier
+- **`authType`**: 
+  - `"anthropic"` - Uses `x-api-key` header (Anthropic Claude)
+  - `"bearer"` - Uses `Authorization: Bearer` header (OpenAI, OpenRouter, local LLMs)
+
 ## Features
 
 ### File Operations

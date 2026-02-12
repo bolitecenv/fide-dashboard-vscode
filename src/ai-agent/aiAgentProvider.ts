@@ -19,6 +19,7 @@ interface AiConfig {
     apiUrl: string;
     apiKey: string;
     model: string;
+    authType?: 'anthropic' | 'bearer';
 }
 
 export class AiAgentProvider {
@@ -219,18 +220,47 @@ Guidelines:
 
             let response;
             try {
-                response = await axios.post(this._aiConfig.apiUrl, {
-                    model: this._aiConfig.model,
-                    max_tokens: 4096,
-                    system: systemPrompt,
-                    messages: this._messages,
-                    tools: tools
-                }, {
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'x-api-key': this._aiConfig.apiKey,
-                        'anthropic-version': '2023-06-01'
-                    },
+                const authType = this._aiConfig.authType || 'anthropic';
+                const headers: any = {
+                    'Content-Type': 'application/json'
+                };
+
+                let requestBody: any;
+
+                if (authType === 'bearer') {
+                    // OpenAI-compatible API (Bearer token)
+                    headers['Authorization'] = `Bearer ${this._aiConfig.apiKey}`;
+                    requestBody = {
+                        model: this._aiConfig.model,
+                        max_tokens: 4096,
+                        messages: [
+                            { role: 'system', content: systemPrompt },
+                            ...this._messages
+                        ],
+                        tools: tools.map(t => ({
+                            type: 'function',
+                            function: {
+                                name: t.name,
+                                description: t.description,
+                                parameters: t.input_schema
+                            }
+                        }))
+                    };
+                } else {
+                    // Anthropic API (x-api-key)
+                    headers['x-api-key'] = this._aiConfig.apiKey;
+                    headers['anthropic-version'] = '2023-06-01';
+                    requestBody = {
+                        model: this._aiConfig.model,
+                        max_tokens: 4096,
+                        system: systemPrompt,
+                        messages: this._messages,
+                        tools: tools
+                    };
+                }
+
+                response = await axios.post(this._aiConfig.apiUrl, requestBody, {
+                    headers: headers,
                     timeout: 60000
                 });
             } catch (err: any) {
@@ -241,8 +271,82 @@ Guidelines:
             }
 
             const data = response.data;
+            const authType = this._aiConfig.authType || 'anthropic';
 
-            if (data.stop_reason === 'end_turn') {
+            // Handle response based on API type
+            if (authType === 'bearer') {
+                // OpenAI-compatible response handling
+                const choice = data.choices?.[0];
+                if (!choice) {
+                    continueLoop = false;
+                    continue;
+                }
+
+                const finishReason = choice.finish_reason;
+                const message = choice.message;
+
+                if (finishReason === 'stop' || finishReason === 'end_turn') {
+                    if (message?.content) {
+                        this._messages.push({ role: 'assistant', content: message.content });
+                        this.postMessage({
+                            command: 'addMessage',
+                            role: 'assistant',
+                            content: message.content
+                        });
+                    }
+                    continueLoop = false;
+
+                } else if (finishReason === 'tool_calls' && message?.tool_calls) {
+                    // Show any intermediate text
+                    if (message.content) {
+                        this.postMessage({
+                            command: 'addMessage',
+                            role: 'assistant',
+                            content: message.content
+                        });
+                    }
+
+                    // Execute tools
+                    const toolResults: any[] = [];
+                    for (const toolCall of message.tool_calls) {
+                        if (toolCall.type === 'function') {
+                            const functionName = toolCall.function.name;
+                            const functionArgs = JSON.parse(toolCall.function.arguments);
+
+                            this.postMessage({
+                                command: 'addToolExecution',
+                                toolName: functionName,
+                                input: functionArgs
+                            });
+
+                            const result = await this.executeTool(functionName, functionArgs);
+                            const preview = result.length > 300 ? result.substring(0, 300) + '...' : result;
+
+                            this.postMessage({
+                                command: 'addToolResult',
+                                toolName: functionName,
+                                result: preview,
+                                fullResult: result
+                            });
+
+                            toolResults.push({
+                                role: 'tool',
+                                tool_call_id: toolCall.id,
+                                name: functionName,
+                                content: result
+                            });
+                        }
+                    }
+
+                    // Add assistant message and tool results to history
+                    this._messages.push({ role: 'assistant', content: message });
+                    this._messages.push(...toolResults as any);
+
+                } else {
+                    continueLoop = false;
+                }
+
+            } else if (data.stop_reason === 'end_turn') {
                 for (const block of data.content) {
                     if (block.type === 'text' && block.text) {
                         this._messages.push({ role: 'assistant', content: data.content });
@@ -301,6 +405,7 @@ Guidelines:
                 this._messages.push({ role: 'user', content: toolResults });
 
             } else {
+                // Unknown stop reason (Anthropic)
                 continueLoop = false;
             }
         }
