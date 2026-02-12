@@ -51,7 +51,10 @@ export class DltViewerProvider {
             {
                 enableScripts: true,
                 retainContextWhenHidden: true,
-                localResourceRoots: [vscode.Uri.joinPath(this._extensionUri, 'out', 'dlt-viewer')]
+                localResourceRoots: [
+                    vscode.Uri.joinPath(this._extensionUri, 'out', 'dlt-viewer'),
+                    vscode.Uri.joinPath(this._extensionUri, 'src', 'components', 'dlt-core')
+                ]
             }
         );
 
@@ -96,6 +99,10 @@ export class DltViewerProvider {
             vscode.Uri.joinPath(this._extensionUri, 'out', 'dlt-viewer', 'webview.css')
         );
 
+        const wasmUri = webview.asWebviewUri(
+            vscode.Uri.joinPath(this._extensionUri, 'src', 'components', 'dlt-core', 'wasm_demo.wasm')
+        );
+
         return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -104,7 +111,7 @@ export class DltViewerProvider {
     <title>DLT Timeline Viewer</title>
     <link rel="stylesheet" href="${styleUri}">
 </head>
-<body>
+<body data-wasm-uri="${wasmUri}">
     <div class="view-container">
         <div class="dlt-toolbar">
             <div class="toolbar-left">

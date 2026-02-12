@@ -830,3 +830,67 @@ button.secondary:hover {
 .stats-value.error {
     color: var(--vscode-errorForeground);
 }
+
+/* DLT Log Entry Styling */
+.log-entry {
+    padding: 8px 12px;
+    margin-bottom: 8px;
+    background: var(--vscode-editor-background);
+    border: 1px solid var(--vscode-panel-border);
+    border-radius: 4px;
+    font-size: 12px;
+    transition: background 0.2s;
+}
+
+.log-entry:hover {
+    background: var(--vscode-list-hoverBackground);
+}
+
+.log-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 6px;
+    font-family: var(--vscode-editor-font-family);
+}
+
+.log-time {
+    color: var(--vscode-descriptionForeground);
+    font-size: 11px;
+    min-width: 90px;
+}
+
+.log-level {
+    font-weight: bold;
+    min-width: 60px;
+    text-align: center;
+    padding: 2px 6px;
+    border-radius: 3px;
+    background: rgba(255, 255, 255, 0.05);
+}
+
+.log-ecu, .log-app, .log-ctx {
+    color: var(--vscode-descriptionForeground);
+    font-size: 11px;
+}
+
+.log-app {
+    color: var(--vscode-textLink-foreground);
+    font-weight: 500;
+}
+
+.log-payload {
+    margin-left: 0;
+    padding: 6px 8px;
+    background: var(--vscode-textCodeBlock-background);
+    border-radius: 3px;
+    font-family: var(--vscode-editor-font-family);
+    word-break: break-word;
+    color: var(--vscode-editor-foreground);
+}
+
+.log-meta {
+    font-size: 10px;
+    color: var(--vscode-descriptionForeground);
+    margin-top: 4px;
+}

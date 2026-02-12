@@ -20,6 +20,11 @@ let dltPacketBuffer = new Uint8Array(0); // Buffer for incomplete DLT packets
 let dltMessagesReceived = 0; // Total DLT messages successfully parsed
 let dltMessagesIncorrect = 0; // Total DLT messages with errors
 
+// WASM Module
+let wasmModule = null;
+let wasmMemory = null;
+let wasmInitialized = false;
+
 // Chart data
 let charts = [];
 let chartDataSeries = new Map(); // Map<chartId, Map<name, Array<{x, y}>>>
@@ -52,6 +57,61 @@ const colors = [
 ];
 let colorIndex = 0;
 const taskColors = new Map();
+
+// ============================================================================
+// WASM INITIALIZATION
+// ============================================================================
+
+/**
+ * Initialize WASM module for DLT parsing
+ */
+async function initWasm() {
+    const wasmUri = document.body.getAttribute('data-wasm-uri');
+    if (!wasmUri) {
+        console.error('❌ WASM URI not found in data attribute');
+        return false;
+    }
+
+    try {
+        console.log(`🔄 Loading WASM from: ${wasmUri}`);
+        const response = await fetch(wasmUri);
+        const wasmBytes = await response.arrayBuffer();
+        
+        const wasmImports = {
+            env: {
+                // Add any required imports here if needed
+            }
+        };
+        
+        const wasmObj = await WebAssembly.instantiate(wasmBytes, wasmImports);
+        wasmModule = wasmObj.instance.exports;
+        wasmMemory = wasmModule.memory;
+        wasmInitialized = true;
+        
+        const version = wasmModule.get_version ? wasmModule.get_version() : 0;
+        console.log(`✅ WASM module loaded! Version: ${version}, Heap: ${wasmModule.get_heap_capacity()} bytes`);
+        return true;
+    } catch (error) {
+        console.error('❌ Failed to load WASM module:', error);
+        wasmInitialized = false;
+        return false;
+    }
+}
+
+/**
+ * Helper: Convert 4-byte array to string (ECU/App/Context ID)
+ */
+function bytes4ToString(bytes) {
+    return String.fromCharCode(...bytes).replace(/\0/g, '').trim();
+}
+
+/**
+ * Helper: Get log level string from numeric value
+ */
+function getLogLevelString(level) {
+    const levels = ['FATAL', 'ERROR', 'WARN', 'INFO', 'DEBUG', 'VERBOSE'];
+    return levels[level] || `LEVEL_${level}`;
+}
 
 function getTaskColor(taskId) {
     if (!taskColors.has(taskId)) {
@@ -187,60 +247,200 @@ function handleMessage(message) {
 }
 
 /**
- * Parse DLT binary packet
+ * Parse DLT binary packet using WASM module
  * @param {Uint8Array} packet - Complete DLT packet data
  * @returns {Object|null} Parsed DLT message or null if invalid
- * 
- * DLT Standard Header (4 bytes):
- *   - HTYP (1 byte): Header Type
- *   - MCNT (1 byte): Message Counter
- *   - LEN (2 bytes): Length of complete packet
- * 
- * This function will be replaced with WASM parser implementation
  */
 function parseDltPacket(packet) {
-    // TODO: WASM parser will be integrated here
-    // For now, this is a placeholder that validates minimum header
+    if (!wasmInitialized || !wasmModule) {
+        console.warn('⚠️ WASM not initialized, using fallback parser');
+        return parseDltPacketFallback(packet);
+    }
     
+    try {
+        // Allocate memory in WASM for the packet
+        const packetPtr = wasmModule.allocate(packet.length);
+        if (packetPtr === 0) {
+            console.error('❌ WASM allocation failed');
+            return null;
+        }
+        
+        // Copy packet data to WASM memory
+        const wasmMemoryArray = new Uint8Array(wasmMemory.buffer);
+        wasmMemoryArray.set(packet, packetPtr);
+        
+        // Call analyze_dlt_message
+        const resultPtr = wasmModule.analyze_dlt_message(packetPtr, packet.length);
+        
+        if (resultPtr === 0) {
+            wasmModule.deallocate(packetPtr);
+            console.error('❌ WASM analyze_dlt_message returned null');
+            return null;
+        }
+        
+        // Read AnalysisResult struct (32 bytes)
+        const resultView = new DataView(wasmMemory.buffer, resultPtr, 32);
+        const result = {
+            totalLen: resultView.getUint16(0, true),
+            headerLen: resultView.getUint16(2, true),
+            payloadLen: resultView.getUint16(4, true),
+            payloadOffset: resultView.getUint16(6, true),
+            msgType: resultView.getUint8(8),
+            logLevel: resultView.getUint8(9),
+            hasSerial: resultView.getUint8(10),
+            hasEcu: resultView.getUint8(11),
+            ecuId: new Uint8Array(wasmMemory.buffer, resultPtr + 12, 4),
+            appId: new Uint8Array(wasmMemory.buffer, resultPtr + 16, 4),
+            ctxId: new Uint8Array(wasmMemory.buffer, resultPtr + 20, 4),
+        };
+        
+        // Try to format verbose payload if available
+        let payload = '';
+        if (result.payloadLen > 0 && wasmModule.format_verbose_payload) {
+            const payloadFormatLen = wasmModule.format_verbose_payload(
+                packetPtr,
+                packet.length,
+                result.payloadOffset,
+                result.payloadLen
+            );
+            
+            if (payloadFormatLen > 0 && wasmModule.get_formatted_payload_ptr) {
+                const formattedPtr = wasmModule.get_formatted_payload_ptr();
+                if (formattedPtr !== 0) {
+                    const formattedBytes = new Uint8Array(wasmMemory.buffer, formattedPtr, payloadFormatLen);
+                    payload = new TextDecoder().decode(formattedBytes);
+                }
+            } else {
+                // Fallback: extract raw payload bytes
+                const payloadBytes = packet.slice(result.payloadOffset, result.payloadOffset + result.payloadLen);
+                payload = new TextDecoder('utf-8', { fatal: false }).decode(payloadBytes);
+            }
+        }
+        
+        // Deallocate WASM memory
+        wasmModule.deallocate(packetPtr);
+        wasmModule.deallocate(resultPtr);
+        
+        // Return parsed message object
+        return {
+            timestamp: Date.now(),
+            ecuId: bytes4ToString(Array.from(result.ecuId)),
+            appId: bytes4ToString(Array.from(result.appId)),
+            ctxId: bytes4ToString(Array.from(result.ctxId)),
+            logLevel: getLogLevelString(result.logLevel),
+            logLevelNum: result.logLevel,
+            msgType: `0x${result.msgType.toString(16).padStart(2, '0')}`,
+            totalLen: result.totalLen,
+            headerLen: result.headerLen,
+            payloadLen: result.payloadLen,
+            payload: payload || '(empty)',
+            hasSerial: result.hasSerial === 1,
+            hasEcu: result.hasEcu === 1
+        };
+    } catch (error) {
+        console.error('❌ WASM parsing error:', error);
+        return null;
+    }
+}
+
+/**
+ * Fallback parser when WASM is not available
+ */
+function parseDltPacketFallback(packet) {
     if (packet.length < 4) {
-        return null; // Not enough data for standard header
+        return null;
     }
     
-    // Read packet length from bytes 2-3 (big-endian)
     const packetLength = (packet[2] << 8) | packet[3];
-    
     if (packet.length !== packetLength) {
-        return null; // Packet length mismatch
+        return null;
     }
     
-    // Extract basic header info
     const htyp = packet[0];
     const mcnt = packet[1];
     
-    // Convert to hex string for debugging
     const hexDump = Array.from(packet.slice(0, Math.min(32, packet.length)))
         .map(b => b.toString(16).padStart(2, '0'))
         .join('');
     
-    // WASM parser will return structured data:
-    // {
-    //   timestamp: number,
-    //   appId: string,
-    //   contextId: string,
-    //   messageType: string,
-    //   payload: string
-    // }
-    
     return {
         timestamp: Date.now(),
+        ecuId: 'UNKNOWN',
         appId: 'UNKNOWN',
-        contextId: 'UNKNOWN',
-        messageType: 'INFO',
-        htyp: `0x${htyp.toString(16).padStart(2, '0')}`,
-        mcnt: mcnt,
-        length: packetLength,
-        payload: `DLT packet [HTYP:0x${htyp.toString(16)}, MCNT:${mcnt}, LEN:${packetLength}] - First bytes: ${hexDump}${packet.length > 32 ? '...' : ''}`
+        ctxId: 'UNKNOWN',
+        logLevel: 'INFO',
+        logLevelNum: 4,
+        msgType: `0x${htyp.toString(16).padStart(2, '0')}`,
+        totalLen: packetLength,
+        headerLen: 0,
+        payloadLen: 0,
+        payload: `Fallback: HTYP=0x${htyp.toString(16)}, MCNT=${mcnt}, LEN=${packetLength}, Hex: ${hexDump}${packet.length > 32 ? '...' : ''}`,
+        hasSerial: false,
+        hasEcu: false
     };
+}
+
+/**
+ * Display a DLT message in the log panel
+ */
+function displayDltMessage(msg) {
+    const logList = document.getElementById('logList');
+    if (!logList) return;
+    
+    // Remove empty message if it exists
+    const emptyMsg = logList.querySelector('.log-empty');
+    if (emptyMsg) {
+        emptyMsg.remove();
+    }
+    
+    // Create log entry
+    const logEntry = document.createElement('div');
+    logEntry.className = `log-entry log-level-${msg.logLevel.toLowerCase()}`;
+    
+    // Color coding by log level
+    let levelColor = '#007acc'; // Default blue
+    switch (msg.logLevelNum) {
+        case 0: levelColor = '#d14'; break; // FATAL - red
+        case 1: levelColor = '#f14c4c'; break; // ERROR - light red
+        case 2: levelColor = '#f9a825'; break; // WARN - orange
+        case 3: levelColor = '#4ec9b0'; break; // INFO - cyan
+        case 4: levelColor = '#608b4e'; break; // DEBUG - green
+        case 5: levelColor = '#858585'; break; // VERBOSE - gray
+    }
+    
+    logEntry.innerHTML = `
+        <div class="log-header" style="border-left: 3px solid ${levelColor}; padding-left: 8px;">
+            <span class="log-time">${new Date().toLocaleTimeString()}.${Date.now() % 1000}</span>
+            <span class="log-level" style="color: ${levelColor}; font-weight: bold;">${msg.logLevel}</span>
+            <span class="log-ecu">[${msg.ecuId || 'N/A'}]</span>
+            <span class="log-app">${msg.appId || 'N/A'}</span>
+            <span class="log-ctx">:${msg.ctxId || 'N/A'}</span>
+        </div>
+        <div class="log-payload">${escapeHtml(msg.payload)}</div>
+        <div class="log-meta" style="font-size: 10px; color: var(--vscode-descriptionForeground); margin-top: 4px;">
+            Packet: ${msg.totalLen}B (Hdr: ${msg.headerLen}B, Payload: ${msg.payloadLen}B) | ${msg.hasSerial ? '📡 Serial' : ''} ${msg.hasEcu ? '🔧 ECU' : ''}
+        </div>
+    `;
+    
+    logList.appendChild(logEntry);
+    
+    // Auto-scroll to bottom
+    logList.scrollTop = logList.scrollHeight;
+    
+    // Limit log entries to 1000
+    const entries = logList.querySelectorAll('.log-entry');
+    if (entries.length > 1000) {
+        entries[0].remove();
+    }
+}
+
+/**
+ * Escape HTML to prevent XSS
+ */
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
 }
 
 /**
@@ -327,12 +527,10 @@ function handleDltBinaryMessage(data) {
                 dltMessagesReceived++;
                 updateDltStats();
                 
-                // Process the parsed DLT message
-                // For now, just log it (will be integrated with timeline/trace view)
+                // Display the parsed DLT message in the log panel
                 console.log('✅ DLT Message:', parsedMessage);
+                displayDltMessage(parsedMessage);
                 
-                // You can route this to trace timeline, logs, or other views
-                // handleMessage(parsedMessage.payload);
             } else {
                 dltMessagesIncorrect++;
                 updateDltStats();
@@ -1564,7 +1762,13 @@ function exportCharts() {
 }
 
 // Auto-connect on load
-window.addEventListener('load', () => {
+// Auto-connect on load
+window.addEventListener('load', async () => {
+    // Initialize WASM module first
+    console.log('🚀 Initializing DLT Viewer...');
+    await initWasm();
+    
+    // Then connect to WebSocket
     setTimeout(() => {
         connectWebSocket();
     }, 500);
