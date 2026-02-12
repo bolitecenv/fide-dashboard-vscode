@@ -71,7 +71,7 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
-    "compile": "tsc -p ./ && cp src/dlt-viewer/webview.js out/dlt-viewer/webview.js && cp src/dlt-viewer/webview.css out/dlt-viewer/webview.css && cp src/ai-agent/webview.js out/ai-agent/webview.js && cp src/ai-agent/webview.css out/ai-agent/webview.css && cp src/dashboard/webview.js out/dashboard/webview.js && cp src/dashboard/webview.css out/dashboard/webview.css",
+    "compile": "tsc -p ./ && cp src/dlt-viewer/webview.js out/dlt-viewer/webview.js && cp src/dlt-viewer/webview.css out/dlt-viewer/webview.css && cp -r src/dlt-viewer/modules out/dlt-viewer/ && cp src/ai-agent/webview.js out/ai-agent/webview.js && cp src/ai-agent/webview.css out/ai-agent/webview.css && cp src/dashboard/webview.js out/dashboard/webview.js && cp src/dashboard/webview.css out/dashboard/webview.css",
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src --ext ts",
