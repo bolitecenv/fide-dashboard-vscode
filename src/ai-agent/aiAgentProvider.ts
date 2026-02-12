@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import axios from 'axios';
+import { exec } from 'child_process';
 
 interface Message {
     role: 'user' | 'assistant';
@@ -26,6 +27,7 @@ export class AiAgentProvider {
     private _messages: Message[] = [];
     private _workspaceRoot: string | undefined;
     private _aiConfig: AiConfig | undefined;
+    private _isProcessing = false;
 
     constructor(extensionUri: vscode.Uri) {
         this._extensionUri = extensionUri;
@@ -35,7 +37,7 @@ export class AiAgentProvider {
 
     private loadAiConfig() {
         try {
-            const configPath = path.join(path.dirname(this._extensionUri.fsPath), 'ai-config.json');
+            const configPath = path.join(this._extensionUri.fsPath, 'ai-config.json');
             const configData = fs.readFileSync(configPath, 'utf-8');
             this._aiConfig = JSON.parse(configData);
         } catch (error) {
@@ -76,6 +78,10 @@ export class AiAgentProvider {
                     case 'clearChat':
                         this.clearChat();
                         break;
+                    case 'stopGeneration':
+                        this._isProcessing = false;
+                        this.postMessage({ command: 'setThinking', thinking: false });
+                        break;
                 }
             },
             undefined,
@@ -87,9 +93,13 @@ export class AiAgentProvider {
         }, null, []);
     }
 
+    private postMessage(message: any) {
+        this._panel?.webview.postMessage(message);
+    }
+
     private async handleUserMessage(userMessage: string) {
         if (!this._aiConfig) {
-            this._panel?.webview.postMessage({
+            this.postMessage({
                 command: 'addMessage',
                 role: 'error',
                 content: 'AI configuration not loaded. Please check ai-config.json'
@@ -97,102 +107,81 @@ export class AiAgentProvider {
             return;
         }
 
-        this._messages.push({ role: 'user', content: userMessage });
-        
-        this._panel?.webview.postMessage({
-            command: 'addMessage',
-            role: 'user',
-            content: userMessage
-        });
-
-        // Planning phase
-        this._panel?.webview.postMessage({
-            command: 'addPlanningMessage',
-            content: 'Analyzing request and creating task plan...'
-        });
-
-        try {
-            const response = await this.callAI();
-            
-            if (response) {
-                this._messages.push({ role: 'assistant', content: response });
-                this._panel?.webview.postMessage({
-                    command: 'addMessage',
-                    role: 'assistant',
-                    content: response
-                });
-            }
-        } catch (error) {
-        if (!this._aiConfig) {
-            throw new Error('AI configuration not loaded');
+        if (this._isProcessing) {
+            return;
         }
 
-            this._panel?.webview.postMessage({
+        this._isProcessing = true;
+
+        // Show user message
+        this._messages.push({ role: 'user', content: userMessage });
+        this.postMessage({ command: 'addMessage', role: 'user', content: userMessage });
+
+        // Show thinking indicator
+        this.postMessage({ command: 'setThinking', thinking: true });
+
+        try {
+            await this.callAI();
+        } catch (error) {
+            console.error('AI call error:', error);
+            this.postMessage({
                 command: 'addMessage',
                 role: 'error',
                 content: `Error: ${error instanceof Error ? error.message : 'Unknown error'}`
             });
+        } finally {
+            this._isProcessing = false;
+            this.postMessage({ command: 'setThinking', thinking: false });
         }
     }
 
-    private async callAI(): Promise<string> {
+    private async callAI(): Promise<void> {
+        if (!this._aiConfig) {
+            throw new Error('AI configuration not loaded');
+        }
+
         const tools: Tool[] = [
             {
                 name: "search_files",
-                description: "Search for files in the workspace by name pattern",
+                description: "Search for files in the workspace by glob pattern. Returns matching file paths.",
                 input_schema: {
                     type: "object",
                     properties: {
-                        pattern: {
-                            type: "string",
-                            description: "Glob pattern to search for files (e.g., '**/*.ts', 'src/**')"
-                        }
+                        pattern: { type: "string", description: "Glob pattern (e.g. '**/*.ts', 'src/**/*.rs')" }
                     },
                     required: ["pattern"]
                 }
             },
             {
                 name: "read_file",
-                description: "Read the contents of a file",
+                description: "Read the contents of a file in the workspace",
                 input_schema: {
                     type: "object",
                     properties: {
-                        path: {
-                            type: "string",
-                            description: "Relative path to the file from workspace root"
-                        }
+                        path: { type: "string", description: "Relative path from workspace root" }
                     },
                     required: ["path"]
                 }
             },
             {
                 name: "write_file",
-                description: "Write or update a file",
+                description: "Write or update a file. Creates directories if needed.",
                 input_schema: {
                     type: "object",
                     properties: {
-                        path: {
-                            type: "string",
-                            description: "Relative path to the file from workspace root"
-                        },
-                        content: {
-                            type: "string",
-                            description: "Content to write to the file"
-                        }
+                        path: { type: "string", description: "Relative path from workspace root" },
+                        content: { type: "string", description: "File content" }
                     },
                     required: ["path", "content"]
                 }
             },
             {
                 name: "execute_command",
-                description: "Execute a shell command in the workspace (e.g., 'cargo run', 'make', 'npm build')",
+                description: "Execute a shell command and return stdout/stderr output",
                 input_schema: {
                     type: "object",
                     properties: {
-                        command: {
-                            type: "string",
-                            description: "Shell command to execute"
-                        }
+                        command: { type: "string", description: "Shell command to execute" }
                     },
                     required: ["command"]
                 }
@@ -203,90 +192,102 @@ export class AiAgentProvider {
                 input_schema: {
                     type: "object",
                     properties: {
-                        path: {
-                            type: "string",
-                            description: "Relative path to the directory from workspace root"
-                        }
+                        path: { type: "string", description: "Relative path ('.' for root)" }
                     },
                     required: ["path"]
                 }
             }
         ];
 
-        const systemPrompt = `You are an AI assistant helping with embedded development projects. You have access to the workspace and can:
-- Search for files
-- Read and write files
-- Execute build commands (cargo run, make, cmake, etc.)
-- List directory contents
+        const systemPrompt = `You are an AI coding assistant for embedded development projects in VS Code. You have access to workspace tools.
 
 Current workspace: ${this._workspaceRoot || 'Not set'}
 
-When you receive a request:
-1. First, briefly analyze what the user wants to accomplish
-2. Create a mental task list of steps needed
-3. Execute the tasks using available tools
-4. Provide clear, concise responses
-
-When using tools, explain what you're doing in a brief summary before executing.`;
+Guidelines:
+- Be concise and direct in responses
+- Use tools to gather information before answering
+- Format responses with markdown (code blocks, lists, bold)
+- When writing code, use fenced code blocks with language identifiers
+- Explain what you're doing briefly when using tools`;
 
         let continueLoop = true;
-        let assistantResponse = '';
+        const maxIterations = 15;
+        let iteration = 0;
 
-        while (continueLoop) {
-            const requestBody = {
-                model: this._aiConfig!.model,
-                max_tokens: 4096,
-                system: systemPrompt,
-                messages: this._messages,
-                tools: tools
-            };
+        while (continueLoop && this._isProcessing && iteration < maxIterations) {
+            iteration++;
 
-            const response = await axios.post(this._aiConfig!.apiUrl, requestBody, {
-                headers: {
-                    'Content-Type': 'application/json',
-                    'x-api-key': this._aiConfig!.apiKey,
-                    'anthropic-version': '2023-06-01'
+            let response;
+            try {
+                response = await axios.post(this._aiConfig.apiUrl, {
+                    model: this._aiConfig.model,
+                    max_tokens: 4096,
+                    system: systemPrompt,
+                    messages: this._messages,
+                    tools: tools
+                }, {
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'x-api-key': this._aiConfig.apiKey,
+                        'anthropic-version': '2023-06-01'
+                    },
+                    timeout: 60000
+                });
+            } catch (err: any) {
+                if (err.response) {
+                    throw new Error(`API error ${err.response.status}: ${JSON.stringify(err.response.data?.error?.message || err.response.data)}`);
                 }
-            });
+                throw err;
+            }
 
             const data = response.data;
 
             if (data.stop_reason === 'end_turn') {
-                // AI finished with text response
                 for (const block of data.content) {
-                    if (block.type === 'text') {
-                        assistantResponse += block.text;
+                    if (block.type === 'text' && block.text) {
+                        this._messages.push({ role: 'assistant', content: data.content });
+                        this.postMessage({
+                            command: 'addMessage',
+                            role: 'assistant',
+                            content: block.text
+                        });
                     }
                 }
                 continueLoop = false;
-            } else if (data.stop_reason === 'tool_use') {
-                // AI wants to use tools
-                const toolResults: any[] = [];
 
+            } else if (data.stop_reason === 'tool_use') {
+                // Show any intermediate text
                 for (const block of data.content) {
-                    if (block.type === 'text') {
-                        assistantResponse += block.text;
-                    } else if (block.type === 'tool_use') {
-                        // Show tool execution in UI only for execute_command
-                        if (block.name === 'execute_command') {
-                            this._panel?.webview.postMessage({
-                                command: 'addToolExecution',
-                                toolName: block.name,
-                                input: block.input
-                            });
-                        }
+                    if (block.type === 'text' && block.text) {
+                        this.postMessage({
+                            command: 'addMessage',
+                            role: 'assistant',
+                            content: block.text
+                        });
+                    }
+                }
+
+                // Execute all tools in this turn
+                const toolResults: any[] = [];
+                for (const block of data.content) {
+                    if (block.type === 'tool_use') {
+                        this.postMessage({
+                            command: 'addToolExecution',
+                            toolName: block.name,
+                            input: block.input
+                        });
 
                         const result = await this.executeTool(block.name, block.input);
-                        
-                        // Show tool result in UI only for execute_command
-                        if (block.name === 'execute_command') {
-                            this._panel?.webview.postMessage({
-                                command: 'addToolResult',
-                                toolName: block.name,
-                                result: result.substring(0, 200) + (result.length > 200 ? '...' : ''),
-                                fullResult: result
-                            });
-                        }
+                        const preview = result.length > 300
+                            ? result.substring(0, 300) + '...'
+                            : result;
+
+                        this.postMessage({
+                            command: 'addToolResult',
+                            toolName: block.name,
+                            result: preview,
+                            fullResult: result
+                        });
 
                         toolResults.push({
                             type: "tool_result",
@@ -296,16 +297,21 @@ When using tools, explain what you're doing in a brief summary before executing.
                     }
                 }
 
-                // Add assistant's tool use to messages
                 this._messages.push({ role: 'assistant', content: data.content });
-                // Add tool results
                 this._messages.push({ role: 'user', content: toolResults });
+
             } else {
                 continueLoop = false;
             }
         }
 
-        return assistantResponse;
+        if (iteration >= maxIterations) {
+            this.postMessage({
+                command: 'addMessage',
+                role: 'error',
+                content: 'Reached maximum iterations. Try a simpler request.'
+            });
+        }
     }
 
     private async executeTool(toolName: string, input: any): Promise<string> {
@@ -313,100 +319,94 @@ When using tools, explain what you're doing in a brief summary before executing.
             switch (toolName) {
                 case 'search_files':
                     return await this.searchFiles(input.pattern);
-                
                 case 'read_file':
                     return await this.readFile(input.path);
-                
                 case 'write_file':
                     return await this.writeFile(input.path, input.content);
-                
                 case 'execute_command':
                     return await this.executeCommand(input.command);
-                
                 case 'list_directory':
                     return await this.listDirectory(input.path);
-                
                 default:
                     return `Unknown tool: ${toolName}`;
             }
         } catch (error) {
-            return `Error executing ${toolName}: ${error instanceof Error ? error.message : 'Unknown error'}`;
+            return `Error: ${error instanceof Error ? error.message : 'Unknown error'}`;
         }
     }
 
     private async searchFiles(pattern: string): Promise<string> {
         const files = await vscode.workspace.findFiles(pattern, '**/node_modules/**', 100);
         if (files.length === 0) {
-            return 'No files found';
+            return 'No files found matching: ' + pattern;
         }
         return files.map(f => vscode.workspace.asRelativePath(f)).join('\n');
     }
 
     private async readFile(filePath: string): Promise<string> {
-        if (!this._workspaceRoot) {
-            return 'No workspace open';
-        }
+        if (!this._workspaceRoot) { return 'No workspace open'; }
         const fullPath = path.join(this._workspaceRoot, filePath);
-        const content = await fs.promises.readFile(fullPath, 'utf-8');
-        return content;
+        try {
+            const content = await fs.promises.readFile(fullPath, 'utf-8');
+            if (content.length > 50000) {
+                return content.substring(0, 50000) + '\n\n... [truncated]';
+            }
+            return content;
+        } catch {
+            return `File not found: ${filePath}`;
+        }
     }
 
     private async writeFile(filePath: string, content: string): Promise<string> {
-        if (!this._workspaceRoot) {
-            return 'No workspace open';
-        }
+        if (!this._workspaceRoot) { return 'No workspace open'; }
         const fullPath = path.join(this._workspaceRoot, filePath);
-        
-        // Create directory if it doesn't exist
-        const dir = path.dirname(fullPath);
-        await fs.promises.mkdir(dir, { recursive: true });
-        
+        await fs.promises.mkdir(path.dirname(fullPath), { recursive: true });
         await fs.promises.writeFile(fullPath, content, 'utf-8');
         return `File written: ${filePath}`;
     }
 
     private async executeCommand(command: string): Promise<string> {
+        if (!this._workspaceRoot) { return 'No workspace open'; }
         return new Promise((resolve) => {
-            const terminal = vscode.window.createTerminal({
-                name: 'AI Agent',
-                cwd: this._workspaceRoot
+            exec(command, {
+                cwd: this._workspaceRoot,
+                timeout: 30000,
+                maxBuffer: 1024 * 1024
+            }, (error, stdout, stderr) => {
+                let output = '';
+                if (stdout) { output += stdout; }
+                if (stderr) { output += (output ? '\n' : '') + stderr; }
+                if (error && !output) { output = `Command failed: ${error.message}`; }
+                if (output.length > 10000) {
+                    output = output.substring(0, 10000) + '\n... [truncated]';
+                }
+                resolve(output || 'Command completed with no output.');
             });
-            
-            terminal.show();
-            terminal.sendText(command);
-            
-            // Note: We can't easily capture terminal output, so we just confirm execution
-            resolve(`Command executed in terminal: ${command}\nCheck the terminal for output.`);
         });
     }
 
     private async listDirectory(dirPath: string): Promise<string> {
-        if (!this._workspaceRoot) {
-            return 'No workspace open';
-        }
+        if (!this._workspaceRoot) { return 'No workspace open'; }
         const fullPath = path.join(this._workspaceRoot, dirPath);
-        const entries = await fs.promises.readdir(fullPath, { withFileTypes: true });
-        
-        const formatted = entries.map(entry => {
-            const type = entry.isDirectory() ? '[DIR]' : '[FILE]';
-            return `${type} ${entry.name}`;
-        }).join('\n');
-        
-        return formatted || 'Empty directory';
+        try {
+            const entries = await fs.promises.readdir(fullPath, { withFileTypes: true });
+            if (entries.length === 0) { return 'Empty directory'; }
+            return entries.map(e => e.isDirectory() ? `${e.name}/` : e.name).sort().join('\n');
+        } catch {
+            return `Directory not found: ${dirPath}`;
+        }
     }
 
     private clearChat() {
         this._messages = [];
-        this._panel?.webview.postMessage({
-            command: 'clearMessages'
-        });
+        this._isProcessing = false;
+        this.postMessage({ command: 'clearMessages' });
     }
 
     private _getHtmlForWebview(webview: vscode.Webview): string {
         const scriptUri = webview.asWebviewUri(
             vscode.Uri.joinPath(this._extensionUri, 'out', 'ai-agent', 'webview.js')
         );
-
         const styleUri = webview.asWebviewUri(
             vscode.Uri.joinPath(this._extensionUri, 'out', 'ai-agent', 'webview.css')
         );
@@ -421,29 +421,42 @@ When using tools, explain what you're doing in a brief summary before executing.
 </head>
 <body>
     <div class="header">
-        <h1>🤖 AI Agent</h1>
-        <button onclick="clearChat()">Clear Chat</button>
+        <div class="header-left">
+            <div class="header-icon">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1L9.5 5.5L14 6L10.5 9L11.5 14L8 11.5L4.5 14L5.5 9L2 6L6.5 5.5L8 1Z"/></svg>
+            </div>
+            <h1>Copilot</h1>
+        </div>
+        <div class="header-actions">
+            <button id="clearBtn" title="New conversation">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M14 1v10H5.41l-.71.71L3 13.41V11H1V1h13zm1-1H0v12h3v4l4-4h8V0z"/></svg>
+            </button>
+        </div>
     </div>
 
     <div class="chat-container" id="chatContainer">
         <div class="empty-state">
-            <div class="empty-state-icon">🤖</div>
-            <h2>AI Agent Ready</h2>
-            <p>I can help you with:</p>
-            <p>• Searching and reading files</p>
-            <p>• Editing code</p>
-            <p>• Running build commands (cargo, make, npm, etc.)</p>
-            <p>• Understanding your project structure</p>
+            <div class="empty-state-icon">
+                <svg width="32" height="32" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1L9.5 5.5L14 6L10.5 9L11.5 14L8 11.5L4.5 14L5.5 9L2 6L6.5 5.5L8 1Z"/></svg>
+            </div>
+            <h2>How can I help you?</h2>
+            <p class="empty-state-description">I can answer questions about your embedded project, search files, write code, and run commands.</p>
+            <div class="empty-suggestions" id="emptySuggestions">
+                <button class="suggestion-chip" data-prompt="Show me the project structure">Show project structure</button>
+                <button class="suggestion-chip" data-prompt="List all source files in the project">List source files</button>
+                <button class="suggestion-chip" data-prompt="Explain the main entry point of this project">Explain main entry point</button>
+                <button class="suggestion-chip" data-prompt="What build system does this project use?">Identify build system</button>
+            </div>
         </div>
     </div>
 
     <div class="input-container">
-        <textarea 
-            id="messageInput" 
-            placeholder="Ask me to help with your project..."
-            rows="1"
-        ></textarea>
-        <button id="sendBtn" onclick="sendMessage()">Send</button>
+        <div class="input-wrapper">
+            <textarea id="messageInput" placeholder="Ask Copilot or type / for commands" rows="1"></textarea>
+            <button id="sendBtn" title="Send message">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M1 1.91L1.78 1.5L15 8L1.78 14.5L1 14.09L3.56 8L1 1.91ZM3.41 8.75L1.87 13.26L13.3 8L1.87 2.74L3.4 7.25H8V8.75H3.41Z"/></svg>
+            </button>
+        </div>
     </div>
 
     <script src="${scriptUri}"></script>
