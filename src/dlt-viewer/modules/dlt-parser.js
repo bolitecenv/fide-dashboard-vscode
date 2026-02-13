@@ -132,14 +132,20 @@ function parseDltPacket(packet) {
     }
     
     try {
+        // Reset allocator to prevent memory corruption from accumulated allocations
+        if (wasmModule.reset_allocator) {
+            wasmModule.reset_allocator();
+        }
+
         const packetPtr = wasmModule.allocate(packet.length);
         if (packetPtr === 0) {
             console.error('❌ WASM allocation failed');
             return null;
         }
         
-        const wasmMemoryArray = new Uint8Array(wasmMemory.buffer);
-        wasmMemoryArray.set(packet, packetPtr);
+        // Get fresh buffer reference for writing
+        let memory = new Uint8Array(wasmModule.memory.buffer);
+        memory.set(packet, packetPtr);
         
         const resultPtr = wasmModule.analyze_dlt_message(packetPtr, packet.length);
         
@@ -149,38 +155,52 @@ function parseDltPacket(packet) {
             return null;
         }
         
-        const resultView = new DataView(wasmMemory.buffer, resultPtr, 32);
-        const result = {
-            totalLen: resultView.getUint16(0, true),
-            headerLen: resultView.getUint16(2, true),
-            payloadLen: resultView.getUint16(4, true),
-            payloadOffset: resultView.getUint16(6, true),
-            msgType: resultView.getUint8(8),
-            logLevel: resultView.getUint8(9),
-            hasSerial: resultView.getUint8(10),
-            hasEcu: resultView.getUint8(11),
-            ecuId: new Uint8Array(wasmMemory.buffer, resultPtr + 12, 4),
-            appId: new Uint8Array(wasmMemory.buffer, resultPtr + 16, 4),
-            ctxId: new Uint8Array(wasmMemory.buffer, resultPtr + 20, 4),
-        };
+        // IMPORTANT: Get fresh buffer reference after WASM call (memory may have grown)
+        let buffer = wasmModule.memory.buffer;
+        memory = new Uint8Array(buffer);
+        const dataView = new DataView(buffer);
+
+        const totalLen = dataView.getUint16(resultPtr, true);
+        const headerLen = dataView.getUint16(resultPtr + 2, true);
+        const payloadLen = dataView.getUint16(resultPtr + 4, true);
+        const payloadOffset = dataView.getUint16(resultPtr + 6, true);
+        const msgType = memory[resultPtr + 8];
+        const logLevel = memory[resultPtr + 9];
+        const hasSerial = memory[resultPtr + 10];
+        const hasEcu = memory[resultPtr + 11];
+
+        const ecuId = bytes4ToString(Array.from(memory.slice(resultPtr + 12, resultPtr + 16)));
+        const appId = bytes4ToString(Array.from(memory.slice(resultPtr + 16, resultPtr + 20)));
+        const ctxId = bytes4ToString(Array.from(memory.slice(resultPtr + 20, resultPtr + 24)));
         
+        // Extract payload
         let payload = '';
-        if (result.payloadLen > 0 && wasmModule.format_verbose_payload) {
-            const payloadFormatLen = wasmModule.format_verbose_payload(
-                packetPtr,
-                packet.length,
-                result.payloadOffset,
-                result.payloadLen
-            );
-            
-            if (payloadFormatLen > 0 && wasmModule.get_formatted_payload_ptr) {
-                const formattedPtr = wasmModule.get_formatted_payload_ptr();
-                if (formattedPtr !== 0) {
-                    const formattedBytes = new Uint8Array(wasmMemory.buffer, formattedPtr, payloadFormatLen);
-                    payload = new TextDecoder().decode(formattedBytes);
+        if (payloadLen > 0) {
+            if (wasmModule.format_verbose_payload) {
+                const payloadFormatLen = wasmModule.format_verbose_payload(
+                    packetPtr,
+                    packet.length,
+                    payloadOffset,
+                    payloadLen
+                );
+                
+                if (payloadFormatLen > 0 && wasmModule.get_formatted_payload_ptr) {
+                    const formattedPtr = wasmModule.get_formatted_payload_ptr();
+                    if (formattedPtr !== 0) {
+                        // Get fresh buffer reference after WASM call
+                        const freshBuffer = wasmModule.memory.buffer;
+                        const freshMemory = new Uint8Array(freshBuffer);
+                        const formatted = freshMemory.slice(formattedPtr, formattedPtr + payloadFormatLen);
+                        payload = new TextDecoder().decode(formatted);
+                    }
+                } else {
+                    // Fallback: raw payload decode (payloadOffset is relative to message start)
+                    const payloadBytes = memory.slice(packetPtr + payloadOffset, packetPtr + payloadOffset + payloadLen);
+                    payload = new TextDecoder('utf-8', { fatal: false }).decode(payloadBytes);
                 }
             } else {
-                const payloadBytes = packet.slice(result.payloadOffset, result.payloadOffset + result.payloadLen);
+                // No format_verbose_payload available — decode raw bytes
+                const payloadBytes = memory.slice(packetPtr + payloadOffset, packetPtr + payloadOffset + payloadLen);
                 payload = new TextDecoder('utf-8', { fatal: false }).decode(payloadBytes);
             }
         }
@@ -190,18 +210,18 @@ function parseDltPacket(packet) {
         
         return {
             timestamp: Date.now(),
-            ecuId: bytes4ToString(Array.from(result.ecuId)),
-            appId: bytes4ToString(Array.from(result.appId)),
-            ctxId: bytes4ToString(Array.from(result.ctxId)),
-            logLevel: getLogLevelString(result.logLevel),
-            logLevelNum: result.logLevel,
-            msgType: `0x${result.msgType.toString(16).padStart(2, '0')}`,
-            totalLen: result.totalLen,
-            headerLen: result.headerLen,
-            payloadLen: result.payloadLen,
+            ecuId: ecuId,
+            appId: appId,
+            ctxId: ctxId,
+            logLevel: getLogLevelString(logLevel),
+            logLevelNum: logLevel,
+            msgType: `0x${msgType.toString(16).padStart(2, '0')}`,
+            totalLen: totalLen,
+            headerLen: headerLen,
+            payloadLen: payloadLen,
             payload: payload || '(empty)',
-            hasSerial: result.hasSerial === 1,
-            hasEcu: result.hasEcu === 1
+            hasSerial: hasSerial === 1,
+            hasEcu: hasEcu === 1
         };
     } catch (error) {
         console.error('❌ WASM parsing error:', error);
