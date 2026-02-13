@@ -86,6 +86,27 @@ export class AiAgentViewProvider implements vscode.TreeDataProvider<FideViewItem
     }
 }
 
+export class ProjectWizardViewProvider implements vscode.TreeDataProvider<FideViewItem> {
+    private _onDidChangeTreeData: vscode.EventEmitter<FideViewItem | undefined | null | void> = new vscode.EventEmitter<FideViewItem | undefined | null | void>();
+    readonly onDidChangeTreeData: vscode.Event<FideViewItem | undefined | null | void> = this._onDidChangeTreeData.event;
+
+    getTreeItem(element: FideViewItem): vscode.TreeItem {
+        return element;
+    }
+
+    getChildren(element?: FideViewItem): Thenable<FideViewItem[]> {
+        if (!element) {
+            return Promise.resolve([
+                new FideViewItem('Open Project Designer', vscode.TreeItemCollapsibleState.None, {
+                    command: 'fide.openProjectWizard',
+                    title: 'Open Project Designer'
+                })
+            ]);
+        }
+        return Promise.resolve([]);
+    }
+}
+
 class FideViewItem extends vscode.TreeItem {
     constructor(
         public readonly label: string,

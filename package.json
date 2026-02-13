@@ -35,6 +35,10 @@
         {
           "id": "fide.aiAgentView",
           "name": "AI Agent"
+        },
+        {
+          "id": "fide.projectWizardView",
+          "name": "Project Designer"
         }
       ]
     },
@@ -56,6 +60,12 @@
         "title": "FIDE: Open AI Agent",
         "category": "FIDE",
         "icon": "$(hubot)"
+      },
+      {
+        "command": "fide.openProjectWizard",
+        "title": "FIDE: Open Project Designer",
+        "category": "FIDE",
+        "icon": "$(tools)"
       }
     ],
     "configuration": {
@@ -71,7 +81,7 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
-    "compile": "tsc -p ./ && npx esbuild src/dlt-viewer/webview.js --bundle --outfile=out/dlt-viewer/webview.js --format=iife --platform=browser && cp src/dlt-viewer/webview.css out/dlt-viewer/webview.css && cp src/ai-agent/webview.js out/ai-agent/webview.js && cp src/ai-agent/webview.css out/ai-agent/webview.css && cp src/dashboard/webview.js out/dashboard/webview.js && cp src/dashboard/webview.css out/dashboard/webview.css",
+    "compile": "tsc -p ./ && npx esbuild src/dlt-viewer/webview.js --bundle --outfile=out/dlt-viewer/webview.js --format=iife --platform=browser && cp src/dlt-viewer/webview.css out/dlt-viewer/webview.css && cp src/ai-agent/webview.js out/ai-agent/webview.js && cp src/ai-agent/webview.css out/ai-agent/webview.css && cp src/dashboard/webview.js out/dashboard/webview.js && cp src/dashboard/webview.css out/dashboard/webview.css && mkdir -p out/project-wizard && cp src/project-wizard/webview.js out/project-wizard/webview.js && cp src/project-wizard/webview.css out/project-wizard/webview.css",
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src --ext ts",
