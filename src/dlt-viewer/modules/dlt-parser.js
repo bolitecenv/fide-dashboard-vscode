@@ -271,12 +271,20 @@ function getLogLevelString(level) {
 function updateDltStats() {
     const receivedEl = document.getElementById('dltReceivedCount');
     const incorrectEl = document.getElementById('dltIncorrectCount');
+    const receivedEl2 = document.getElementById('dltReceivedCount2');
+    const incorrectEl2 = document.getElementById('dltIncorrectCount2');
     
     if (receivedEl) {
         receivedEl.textContent = dltMessagesReceived;
     }
     if (incorrectEl) {
         incorrectEl.textContent = dltMessagesIncorrect;
+    }
+    if (receivedEl2) {
+        receivedEl2.textContent = dltMessagesReceived;
+    }
+    if (incorrectEl2) {
+        incorrectEl2.textContent = dltMessagesIncorrect;
     }
 }
 

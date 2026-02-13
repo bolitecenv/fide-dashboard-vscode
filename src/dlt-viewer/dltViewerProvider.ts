@@ -132,6 +132,9 @@ export class DltViewerProvider {
                     <button class="timeline-view-btn" id="chartViewBtn" onclick="setTimelineView('charts')">
                         📈 Charts
                     </button>
+                    <button class="timeline-view-btn" id="logsViewBtn" onclick="setTimelineView('logs')">
+                        📋 DLT Logs
+                    </button>
                 </div>
             </div>
 
@@ -242,13 +245,21 @@ export class DltViewerProvider {
                 </div>
 
                 <!-- Log Panel -->
-                <div class="log-panel">
+                <div class="dlt-logs-container" id="logsContainer" style="display: none;">
                     <div class="log-header">
-                        <h3 id="logTitle">📋 Logs (Select a track above)</h3>
+                        <h3>📋 DLT Logs</h3>
+                        <div class="log-stats">
+                            <span class="stats-label">Received:</span>
+                            <span class="stats-value" id="dltReceivedCount2">0</span>
+                            <span class="stats-label" style="margin-left: 12px;">Errors:</span>
+                            <span class="stats-value error" id="dltIncorrectCount2">0</span>
+                        </div>
                     </div>
                     <div class="log-list" id="logList">
                         <div class="log-empty">
-                            <p>Click on a track in the timeline to view detailed logs</p>
+                            <div class="empty-icon">📡</div>
+                            <p>No DLT messages received</p>
+                            <p class="hint">Set Packet Format to "DLT Binary Format" and connect to WebSocket</p>
                         </div>
                     </div>
                 </div>

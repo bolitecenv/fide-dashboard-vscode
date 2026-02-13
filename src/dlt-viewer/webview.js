@@ -212,28 +212,38 @@ function setTimelineView(view) {
     const traceBtn = document.getElementById('traceViewBtn');
     const callBtn = document.getElementById('callViewBtn');
     const chartBtn = document.getElementById('chartViewBtn');
+    const logsBtn = document.getElementById('logsViewBtn');
     
     const timelineContainer = document.getElementById('timelineContainer');
     const chartContainer = document.getElementById('chartContainer');
+    const logsContainer = document.getElementById('logsContainer');
     
     // Update button states
-    [traceBtn, callBtn, chartBtn].forEach(btn => btn?.classList.remove('active'));
+    [traceBtn, callBtn, chartBtn, logsBtn].forEach(btn => btn?.classList.remove('active'));
     
     if (view === 'trace') {
         traceBtn?.classList.add('active');
         if (timelineContainer) timelineContainer.style.display = 'flex';
         if (chartContainer) chartContainer.style.display = 'none';
+        if (logsContainer) logsContainer.style.display = 'none';
         TraceView.renderTimeline();
     } else if (view === 'calls') {
         callBtn?.classList.add('active');
         if (timelineContainer) timelineContainer.style.display = 'flex';
         if (chartContainer) chartContainer.style.display = 'none';
+        if (logsContainer) logsContainer.style.display = 'none';
         TraceView.renderTimeline();
     } else if (view === 'charts') {
         chartBtn?.classList.add('active');
         if (timelineContainer) timelineContainer.style.display = 'none';
         if (chartContainer) chartContainer.style.display = 'flex';
+        if (logsContainer) logsContainer.style.display = 'none';
         ChartView.renderAllCharts();
+    } else if (view === 'logs') {
+        logsBtn?.classList.add('active');
+        if (timelineContainer) timelineContainer.style.display = 'none';
+        if (chartContainer) chartContainer.style.display = 'none';
+        if (logsContainer) logsContainer.style.display = 'flex';
     }
 }
 
