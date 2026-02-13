@@ -9,6 +9,7 @@ import * as RegisterView from './modules/register-view.js';
 import * as TraceView from './modules/trace-view.js';
 import * as DltParser from './modules/dlt-parser.js';
 import * as WsManager from './modules/websocket-manager.js';
+import * as DebugView from './modules/debug-view.js';
 
 // ============================================================================
 // SHARED STATE
@@ -131,12 +132,18 @@ colorIndex = traceState.colorIndex;
 // Initialize DLT Parser
 DltParser.initDltParser();
 
+// Initialize Debug View
+DebugView.initDebugView({ vscode });
+
 // Initialize WebSocket Manager
 WsManager.initWebSocketManager({
     wsPort: 8083,
     packetType: 'text',
     textMessageHandler: handleMessage,
-    binaryMessageHandler: (data) => DltParser.handleDltBinaryMessage(data, DltParser.displayDltMessage)
+    binaryMessageHandler: (data) => DltParser.handleDltBinaryMessage(data, (msg) => {
+        DltParser.displayDltMessage(msg);
+        DebugView.captureDltLog(msg);
+    })
 });
 
 // ============================================================================
@@ -213,37 +220,40 @@ function setTimelineView(view) {
     const callBtn = document.getElementById('callViewBtn');
     const chartBtn = document.getElementById('chartViewBtn');
     const logsBtn = document.getElementById('logsViewBtn');
+    const debugBtn = document.getElementById('debugViewBtn');
     
     const timelineContainer = document.getElementById('timelineContainer');
     const chartContainer = document.getElementById('chartContainer');
     const logsContainer = document.getElementById('logsContainer');
+    const debugContainer = document.getElementById('debugContainer');
     
     // Update button states
-    [traceBtn, callBtn, chartBtn, logsBtn].forEach(btn => btn?.classList.remove('active'));
+    [traceBtn, callBtn, chartBtn, logsBtn, debugBtn].forEach(btn => btn?.classList.remove('active'));
+    
+    // Hide all
+    if (timelineContainer) timelineContainer.style.display = 'none';
+    if (chartContainer) chartContainer.style.display = 'none';
+    if (logsContainer) logsContainer.style.display = 'none';
+    if (debugContainer) debugContainer.style.display = 'none';
     
     if (view === 'trace') {
         traceBtn?.classList.add('active');
         if (timelineContainer) timelineContainer.style.display = 'flex';
-        if (chartContainer) chartContainer.style.display = 'none';
-        if (logsContainer) logsContainer.style.display = 'none';
         TraceView.renderTimeline();
     } else if (view === 'calls') {
         callBtn?.classList.add('active');
         if (timelineContainer) timelineContainer.style.display = 'flex';
-        if (chartContainer) chartContainer.style.display = 'none';
-        if (logsContainer) logsContainer.style.display = 'none';
         TraceView.renderTimeline();
     } else if (view === 'charts') {
         chartBtn?.classList.add('active');
-        if (timelineContainer) timelineContainer.style.display = 'none';
         if (chartContainer) chartContainer.style.display = 'flex';
-        if (logsContainer) logsContainer.style.display = 'none';
         ChartView.renderAllCharts();
     } else if (view === 'logs') {
         logsBtn?.classList.add('active');
-        if (timelineContainer) timelineContainer.style.display = 'none';
-        if (chartContainer) chartContainer.style.display = 'none';
         if (logsContainer) logsContainer.style.display = 'flex';
+    } else if (view === 'debug') {
+        debugBtn?.classList.add('active');
+        if (debugContainer) debugContainer.style.display = 'flex';
     }
 }
 
@@ -326,12 +336,43 @@ window.addChart = addChart;
 window.removeChart = removeChart;
 window.updateChartConfig = updateChartConfig;
 
+// Debug view functions
+function startBuild() { DebugView.startBuild(); }
+function startRun() { DebugView.startRun(); }
+function stopRun() { DebugView.stopRun(); }
+function startGdb() { DebugView.startGdb(); }
+function stopGdb() { DebugView.stopGdb(); }
+function sendGdbCommand() { DebugView.sendGdbCommand(); }
+function buildAndRun() { DebugView.buildAndRun(); }
+function buildAndDebug() { DebugView.buildAndDebug(); }
+function saveDebugConfig() { DebugView.saveConfig(); }
+function switchDebugTab(tab) { DebugView.switchDebugTab(tab); }
+function askAiDebug(prompt) { DebugView.askAiDebug(prompt); }
+function stopAll() {
+    DebugView.stopRun();
+    DebugView.stopGdb();
+}
+
+window.startBuild = startBuild;
+window.startRun = startRun;
+window.stopRun = stopRun;
+window.startGdb = startGdb;
+window.stopGdb = stopGdb;
+window.sendGdbCommand = sendGdbCommand;
+window.buildAndRun = buildAndRun;
+window.buildAndDebug = buildAndDebug;
+window.saveDebugConfig = saveDebugConfig;
+window.switchDebugTab = switchDebugTab;
+window.askAiDebug = askAiDebug;
+window.stopAll = stopAll;
+
 // Expose modules for direct access if needed
 window.chartView = ChartView;
 window.registerView = RegisterView;
 window.traceView = TraceView;
 window.dltParser = DltParser;
 window.wsManager = WsManager;
+window.debugView = DebugView;
 
 // ============================================================================
 // INITIALIZATION
@@ -342,6 +383,28 @@ window.addEventListener('load', async () => {
     
     // Initialize WASM module first
     await DltParser.initWasm();
+    
+    // Load debug config
+    vscode.postMessage({ command: 'loadDebugConfig' });
+    
+    // Listen for provider messages
+    window.addEventListener('message', (event) => {
+        const msg = event.data;
+        switch (msg.command) {
+            case 'debugOutput':
+                DebugView.handleDebugOutput(msg);
+                break;
+            case 'debugConfigLoaded':
+                DebugView.loadConfig(msg.config);
+                break;
+            case 'debugConfigSaved':
+                console.log('Debug config saved');
+                break;
+            case 'aiDebugResponse':
+                DebugView.handleAiResponse(msg.response);
+                break;
+        }
+    });
     
     // Then connect to WebSocket
     setTimeout(() => {

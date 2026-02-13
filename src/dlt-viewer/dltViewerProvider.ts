@@ -1,4 +1,7 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
+import * as fs from 'fs';
+import { spawn, ChildProcess } from 'child_process';
 
 interface TraceSpan {
     id: string;
@@ -26,12 +29,33 @@ interface CallStack {
     calls: CallEvent[];
 }
 
+interface DebugConfig {
+    buildCmd: string;
+    runCmd: string;
+    gdbCmd: string;
+    gdbTarget: string;
+    elfPath: string;
+    gdbInitCmds: string;
+}
+
+interface AiConfig {
+    apiUrl: string;
+    apiKey: string;
+    model: string;
+    authType?: 'anthropic' | 'bearer';
+}
+
 export class DltViewerProvider {
     private _panel: vscode.WebviewPanel | undefined;
     private _extensionUri: vscode.Uri;
+    private _buildProcess: ChildProcess | undefined;
+    private _runProcess: ChildProcess | undefined;
+    private _gdbProcess: ChildProcess | undefined;
+    private _workspaceRoot: string | undefined;
 
     constructor(extensionUri: vscode.Uri) {
         this._extensionUri = extensionUri;
+        this._workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     }
 
     public show() {
@@ -69,6 +93,18 @@ export class DltViewerProvider {
                         break;
                     case 'exportView':
                         await this._exportViewToFile(message.viewName, message.content);
+                        break;
+                    case 'debugAction':
+                        await this._handleDebugAction(message);
+                        break;
+                    case 'saveDebugConfig':
+                        await this._saveDebugConfig(message.config);
+                        break;
+                    case 'loadDebugConfig':
+                        await this._loadDebugConfig();
+                        break;
+                    case 'aiDebugAnalyze':
+                        await this._handleAiDebugAnalyze(message.prompt, message.context);
                         break;
                     case 'showMessage':
                         if (message.type === 'warning') {
@@ -134,6 +170,9 @@ export class DltViewerProvider {
                     </button>
                     <button class="timeline-view-btn" id="logsViewBtn" onclick="setTimelineView('logs')">
                         📋 DLT Logs
+                    </button>
+                    <button class="timeline-view-btn" id="debugViewBtn" onclick="setTimelineView('debug')">
+                        🔨 Build+Debug
                     </button>
                 </div>
             </div>
@@ -264,6 +303,127 @@ export class DltViewerProvider {
                     </div>
                 </div>
 
+                <!-- Debug View Container -->
+                <div class="debug-view-container" id="debugContainer" style="display: none;">
+                    <div class="debug-tabs">
+                        <button class="debug-tab active" id="debugTab-config" onclick="switchDebugTab('config')">⚙️ Config</button>
+                        <button class="debug-tab" id="debugTab-build" onclick="switchDebugTab('build')">🔨 Build</button>
+                        <button class="debug-tab" id="debugTab-run" onclick="switchDebugTab('run')">▶️ Run</button>
+                        <button class="debug-tab" id="debugTab-gdb" onclick="switchDebugTab('gdb')">🐛 GDB</button>
+                        <button class="debug-tab" id="debugTab-ai" onclick="switchDebugTab('ai')">🤖 AI Debug</button>
+                        <div class="debug-tab-actions">
+                            <button class="debug-action-btn build" onclick="startBuild()" title="Build">🔨 Build</button>
+                            <button class="debug-action-btn run" onclick="buildAndRun()" title="Build & Run">▶️ Run</button>
+                            <button class="debug-action-btn debug" onclick="buildAndDebug()" title="Build & Debug">🐛 Debug</button>
+                            <button class="debug-action-btn stop" onclick="stopAll()" title="Stop All">⏹️ Stop</button>
+                        </div>
+                    </div>
+
+                    <!-- Config Panel -->
+                    <div class="debug-panel" id="debugPanel-config" style="display: flex;">
+                        <div class="debug-config-grid">
+                            <div class="debug-config-field">
+                                <label>Build Command</label>
+                                <input type="text" id="debugBuildCmd" value="cargo build" placeholder="cargo build">
+                            </div>
+                            <div class="debug-config-field">
+                                <label>Run Command</label>
+                                <input type="text" id="debugRunCmd" value="cargo run" placeholder="cargo run">
+                            </div>
+                            <div class="debug-config-field">
+                                <label>GDB Executable</label>
+                                <input type="text" id="debugGdbCmd" value="arm-none-eabi-gdb" placeholder="arm-none-eabi-gdb">
+                            </div>
+                            <div class="debug-config-field">
+                                <label>GDB Target</label>
+                                <input type="text" id="debugGdbTarget" value="localhost:3333" placeholder="localhost:3333">
+                            </div>
+                            <div class="debug-config-field">
+                                <label>ELF Path</label>
+                                <input type="text" id="debugElfPath" value="target/thumbv7em-none-eabihf/debug/firmware" placeholder="path/to/firmware.elf">
+                            </div>
+                            <div class="debug-config-field full-width">
+                                <label>GDB Init Commands (one per line)</label>
+                                <textarea id="debugGdbInitCmds" rows="4" placeholder="target remote localhost:3333&#10;monitor reset halt&#10;load&#10;continue">target remote localhost:3333\nmonitor reset halt\nload\ncontinue</textarea>
+                            </div>
+                            <div class="debug-config-actions">
+                                <button onclick="saveDebugConfig()">💾 Save Config</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Build Panel -->
+                    <div class="debug-panel" id="debugPanel-build" style="display: none;">
+                        <div class="debug-panel-header">
+                            <div class="debug-status">
+                                <span class="status-dot idle" id="buildStatusDot"></span>
+                                <span id="buildStatusLabel">Idle</span>
+                            </div>
+                            <button onclick="startBuild()" class="debug-action-btn build">🔨 Build</button>
+                        </div>
+                        <div class="debug-output" id="buildOutput">
+                            <div class="debug-output-empty">No build output yet. Click Build to start.</div>
+                        </div>
+                    </div>
+
+                    <!-- Run Panel -->
+                    <div class="debug-panel" id="debugPanel-run" style="display: none;">
+                        <div class="debug-panel-header">
+                            <div class="debug-status">
+                                <span class="status-dot idle" id="runStatusDot"></span>
+                                <span id="runStatusLabel">Idle</span>
+                            </div>
+                            <div style="display: flex; gap: 5px;">
+                                <button onclick="startRun()" class="debug-action-btn run">▶️ Run</button>
+                                <button onclick="stopRun()" class="debug-action-btn stop">⏹️ Stop</button>
+                            </div>
+                        </div>
+                        <div class="debug-output" id="runOutput">
+                            <div class="debug-output-empty">No run output yet. Click Run to start.</div>
+                        </div>
+                    </div>
+
+                    <!-- GDB Panel -->
+                    <div class="debug-panel" id="debugPanel-gdb" style="display: none;">
+                        <div class="debug-panel-header">
+                            <div class="debug-status">
+                                <span class="status-dot idle" id="gdbStatusDot"></span>
+                                <span id="gdbStatusLabel">Idle</span>
+                            </div>
+                            <div style="display: flex; gap: 5px;">
+                                <button onclick="startGdb()" class="debug-action-btn debug">🐛 Start GDB</button>
+                                <button onclick="stopGdb()" class="debug-action-btn stop">⏹️ Stop</button>
+                            </div>
+                        </div>
+                        <div class="debug-output" id="gdbOutput">
+                            <div class="debug-output-empty">No GDB session. Click Start GDB to connect.</div>
+                        </div>
+                        <div class="gdb-input-bar">
+                            <span class="gdb-prompt">(gdb)</span>
+                            <input type="text" id="gdbInput" placeholder="Enter GDB command..." onkeydown="if(event.key==='Enter')sendGdbCommand()">
+                            <button onclick="sendGdbCommand()">Send</button>
+                        </div>
+                    </div>
+
+                    <!-- AI Debug Panel -->
+                    <div class="debug-panel" id="debugPanel-ai" style="display: none;">
+                        <div class="debug-panel-header">
+                            <span>🤖 AI Debug Assistant</span>
+                            <span class="debug-dlt-badge">DLT Logs: <strong id="debugDltCount">0</strong></span>
+                        </div>
+                        <div class="ai-debug-prompt-bar">
+                            <input type="text" id="aiDebugPrompt" placeholder="Ask AI about build errors, crashes, DLT logs..." onkeydown="if(event.key==='Enter')askAiDebug()">
+                            <button onclick="askAiDebug()">🤖 Analyze</button>
+                            <button onclick="askAiDebug('Analyze the build errors and suggest fixes')" class="secondary" title="Quick: Analyze build">🔨</button>
+                            <button onclick="askAiDebug('Analyze the DLT logs for issues or anomalies')" class="secondary" title="Quick: Analyze DLT">📋</button>
+                            <button onclick="askAiDebug('Analyze the GDB output and explain the crash')" class="secondary" title="Quick: Analyze crash">🐛</button>
+                        </div>
+                        <div class="ai-debug-output" id="aiDebugOutput">
+                            <div class="debug-output-empty">Ask AI to analyze build errors, runtime issues, or DLT logs.<br>AI has access to build output, run output, GDB output, and DLT log buffer.</div>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- DLT Statistics Panel (Bottom Right) -->
                 <div class="dlt-stats-panel" id="dltStatsPanel">
                     <div class="stats-item">
@@ -339,6 +499,290 @@ export class DltViewerProvider {
             vscode.window.showInformationMessage(`${viewName} log exported to ${logFile.fsPath}`);
         } catch (error) {
             vscode.window.showErrorMessage(`Failed to export ${viewName} log: ${error}`);
+        }
+    }
+
+    // ========================================================================
+    // DEBUG: Build / Run / GDB handlers
+    // ========================================================================
+
+    private _postMessage(message: any) {
+        this._panel?.webview.postMessage(message);
+    }
+
+    private async _handleDebugAction(message: any): Promise<void> {
+        const config: DebugConfig = message.config;
+        const cwd = this._workspaceRoot || process.cwd();
+
+        switch (message.action) {
+            case 'build':
+                this._runProcess?.kill();
+                this._killProcess(this._buildProcess);
+                this._buildProcess = this._spawnProcess(config.buildCmd, cwd, 'build');
+                break;
+
+            case 'run':
+                this._killProcess(this._runProcess);
+                this._runProcess = this._spawnProcess(config.runCmd, cwd, 'run');
+                break;
+
+            case 'stopRun':
+                this._killProcess(this._runProcess);
+                this._runProcess = undefined;
+                this._postMessage({ command: 'debugOutput', action: 'run', status: 'exit', exitCode: -1 });
+                break;
+
+            case 'gdb':
+                this._killProcess(this._gdbProcess);
+                this._startGdb(config, cwd);
+                break;
+
+            case 'stopGdb':
+                if (this._gdbProcess) {
+                    this._gdbProcess.stdin?.write('quit\n');
+                    setTimeout(() => {
+                        this._killProcess(this._gdbProcess);
+                        this._gdbProcess = undefined;
+                    }, 500);
+                }
+                break;
+
+            case 'gdbCommand':
+                if (this._gdbProcess && this._gdbProcess.stdin) {
+                    this._gdbProcess.stdin.write(message.gdbCmd + '\n');
+                }
+                break;
+        }
+    }
+
+    private _spawnProcess(cmd: string, cwd: string, action: string): ChildProcess {
+        const parts = cmd.split(/\s+/);
+        const command = parts[0];
+        const args = parts.slice(1);
+
+        const proc = spawn(command, args, {
+            cwd,
+            shell: true,
+            env: { ...process.env }
+        });
+
+        proc.stdout?.on('data', (data: Buffer) => {
+            this._postMessage({
+                command: 'debugOutput',
+                action,
+                stream: 'stdout',
+                text: data.toString()
+            });
+        });
+
+        proc.stderr?.on('data', (data: Buffer) => {
+            this._postMessage({
+                command: 'debugOutput',
+                action,
+                stream: 'stderr',
+                text: data.toString()
+            });
+        });
+
+        proc.on('close', (code: number | null) => {
+            this._postMessage({
+                command: 'debugOutput',
+                action,
+                status: 'exit',
+                exitCode: code ?? -1
+            });
+        });
+
+        proc.on('error', (err: Error) => {
+            this._postMessage({
+                command: 'debugOutput',
+                action,
+                stream: 'stderr',
+                text: `Error: ${err.message}`
+            });
+            this._postMessage({
+                command: 'debugOutput',
+                action,
+                status: 'exit',
+                exitCode: -1
+            });
+        });
+
+        return proc;
+    }
+
+    private _startGdb(config: DebugConfig, cwd: string): void {
+        const gdbArgs = [config.elfPath];
+        
+        this._gdbProcess = spawn(config.gdbCmd, gdbArgs, {
+            cwd,
+            shell: true,
+            env: { ...process.env }
+        });
+
+        this._gdbProcess.stdout?.on('data', (data: Buffer) => {
+            this._postMessage({
+                command: 'debugOutput',
+                action: 'gdb',
+                stream: 'stdout',
+                text: data.toString()
+            });
+        });
+
+        this._gdbProcess.stderr?.on('data', (data: Buffer) => {
+            this._postMessage({
+                command: 'debugOutput',
+                action: 'gdb',
+                stream: 'stderr',
+                text: data.toString()
+            });
+        });
+
+        this._gdbProcess.on('close', (code: number | null) => {
+            this._postMessage({
+                command: 'debugOutput',
+                action: 'gdb',
+                status: 'exit',
+                exitCode: code ?? -1
+            });
+            this._gdbProcess = undefined;
+        });
+
+        this._gdbProcess.on('error', (err: Error) => {
+            this._postMessage({
+                command: 'debugOutput',
+                action: 'gdb',
+                stream: 'stderr',
+                text: `GDB Error: ${err.message}`
+            });
+        });
+
+        // Send init commands after brief delay
+        setTimeout(() => {
+            if (this._gdbProcess && this._gdbProcess.stdin) {
+                const initCmds = config.gdbInitCmds.split('\\n');
+                initCmds.forEach((cmd, i) => {
+                    setTimeout(() => {
+                        this._gdbProcess?.stdin?.write(cmd.trim() + '\n');
+                    }, i * 300);
+                });
+                
+                this._postMessage({
+                    command: 'debugOutput',
+                    action: 'gdb',
+                    status: 'connected'
+                });
+            }
+        }, 500);
+    }
+
+    private _killProcess(proc: ChildProcess | undefined): void {
+        if (proc && !proc.killed) {
+            try {
+                proc.kill('SIGTERM');
+                setTimeout(() => {
+                    if (!proc.killed) {
+                        proc.kill('SIGKILL');
+                    }
+                }, 1000);
+            } catch (e) {
+                // Process may already be dead
+            }
+        }
+    }
+
+    // ========================================================================
+    // DEBUG CONFIG PERSISTENCE
+    // ========================================================================
+
+    private async _saveDebugConfig(config: DebugConfig): Promise<void> {
+        try {
+            const configPath = path.join(this._extensionUri.fsPath, 'debug-config.json');
+            fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+            this._postMessage({ command: 'debugConfigSaved' });
+        } catch (error) {
+            vscode.window.showErrorMessage(`Failed to save debug config: ${error}`);
+        }
+    }
+
+    private async _loadDebugConfig(): Promise<void> {
+        try {
+            const configPath = path.join(this._extensionUri.fsPath, 'debug-config.json');
+            if (fs.existsSync(configPath)) {
+                const data = fs.readFileSync(configPath, 'utf-8');
+                const config = JSON.parse(data);
+                this._postMessage({ command: 'debugConfigLoaded', config });
+            }
+        } catch (error) {
+            console.error('Failed to load debug config:', error);
+        }
+    }
+
+    // ========================================================================
+    // AI DEBUG ANALYSIS
+    // ========================================================================
+
+    private _loadAiConfig(): AiConfig | undefined {
+        try {
+            const configPath = path.join(this._extensionUri.fsPath, 'ai-config.json');
+            const data = fs.readFileSync(configPath, 'utf-8');
+            return JSON.parse(data);
+        } catch {
+            return undefined;
+        }
+    }
+
+    private async _handleAiDebugAnalyze(prompt: string, context: any): Promise<void> {
+        const aiConfig = this._loadAiConfig();
+        if (!aiConfig || !aiConfig.apiKey) {
+            this._postMessage({
+                command: 'aiDebugResponse',
+                response: '**Error:** AI config not found. Please configure ai-config.json with your API key.'
+            });
+            return;
+        }
+
+        const systemPrompt = `You are an embedded systems debug assistant. You help analyze build errors, runtime crashes, GDB output, and DLT trace logs for embedded firmware projects.
+
+Be concise and actionable. Point to specific lines, suggest fixes, and explain root causes.`;
+
+        let userMessage = prompt || 'Analyze the current debug state and suggest fixes.';
+        userMessage += '\n\n--- BUILD OUTPUT ---\n' + (context.buildLog || '(none)');
+        userMessage += '\n\n--- RUN OUTPUT ---\n' + (context.runLog || '(none)');
+        userMessage += '\n\n--- GDB OUTPUT ---\n' + (context.gdbLog || '(none)');
+        userMessage += '\n\n--- DLT LOGS ---\n' + (context.dltLogs || '(none)');
+        userMessage += '\n\n--- CONFIG ---\n' + JSON.stringify(context.config, null, 2);
+
+        try {
+            const axios = (await import('axios')).default;
+            const headers: any = {
+                'Content-Type': 'application/json'
+            };
+
+            if (aiConfig.authType === 'bearer') {
+                headers['Authorization'] = `Bearer ${aiConfig.apiKey}`;
+            } else {
+                headers['x-api-key'] = aiConfig.apiKey;
+                headers['anthropic-version'] = '2023-06-01';
+            }
+
+            const response = await axios.post(aiConfig.apiUrl, {
+                model: aiConfig.model || 'claude-sonnet-4-5-20250929',
+                max_tokens: 4096,
+                system: systemPrompt,
+                messages: [{ role: 'user', content: userMessage }]
+            }, { headers, timeout: 60000 });
+
+            const text = response.data?.content?.[0]?.text
+                || response.data?.choices?.[0]?.message?.content
+                || 'No response from AI.';
+
+            this._postMessage({ command: 'aiDebugResponse', response: text });
+        } catch (error: any) {
+            this._postMessage({
+                command: 'aiDebugResponse',
+                response: `**AI Error:** ${error.message || error}\n\nCheck your ai-config.json settings.`
+            });
         }
     }
 }
