@@ -82,6 +82,62 @@ document.addEventListener('DOMContentLoaded', () => {
             analyzeBtn.click();
         }
     });
+
+    // Settings panel
+    const settingsBtn = document.getElementById('settingsBtn');
+    const configPanel = document.getElementById('configPanel');
+    const configBackdrop = document.getElementById('configBackdrop');
+    const configCloseBtn = document.getElementById('configCloseBtn');
+    const configCancelBtn = document.getElementById('configCancelBtn');
+    const configSaveBtn = document.getElementById('configSaveBtn');
+    const toggleKeyBtn = document.getElementById('toggleKeyBtn');
+
+    function openConfig() {
+        vscode.postMessage({ command: 'getAiConfig' });
+        configPanel.classList.add('open');
+        configBackdrop.classList.add('open');
+    }
+
+    function closeConfig() {
+        configPanel.classList.remove('open');
+        configBackdrop.classList.remove('open');
+        document.getElementById('configStatus').textContent = '';
+    }
+
+    settingsBtn.addEventListener('click', openConfig);
+    configCloseBtn.addEventListener('click', closeConfig);
+    configCancelBtn.addEventListener('click', closeConfig);
+    configBackdrop.addEventListener('click', closeConfig);
+
+    toggleKeyBtn.addEventListener('click', () => {
+        const keyInput = document.getElementById('cfgApiKey');
+        keyInput.type = keyInput.type === 'password' ? 'text' : 'password';
+    });
+
+    configSaveBtn.addEventListener('click', () => {
+        const config = {
+            apiUrl: document.getElementById('cfgApiUrl').value.trim(),
+            apiKey: document.getElementById('cfgApiKey').value.trim(),
+            model: document.getElementById('cfgModel').value.trim(),
+            authType: document.getElementById('cfgAuthType').value
+        };
+        if (!config.apiUrl || !config.apiKey || !config.model) {
+            document.getElementById('configStatus').textContent = '⚠️ All fields are required';
+            document.getElementById('configStatus').className = 'config-status error';
+            return;
+        }
+        vscode.postMessage({ command: 'saveAiConfig', config });
+    });
+
+    // Auto-select URL when auth type changes
+    document.getElementById('cfgAuthType').addEventListener('change', (e) => {
+        const urlInput = document.getElementById('cfgApiUrl');
+        if (e.target.value === 'anthropic' && (!urlInput.value || urlInput.value.includes('openai'))) {
+            urlInput.value = 'https://api.anthropic.com/v1/messages';
+        } else if (e.target.value === 'bearer' && (!urlInput.value || urlInput.value.includes('anthropic'))) {
+            urlInput.value = 'https://api.openai.com/v1/chat/completions';
+        }
+    });
 });
 
 // ============================================================================
@@ -138,6 +194,30 @@ window.addEventListener('message', (event) => {
 
         case 'error':
             showError(msg.message);
+            break;
+
+        case 'aiConfigLoaded':
+            document.getElementById('cfgApiUrl').value = msg.config.apiUrl || '';
+            document.getElementById('cfgApiKey').value = msg.config.apiKey || '';
+            document.getElementById('cfgModel').value = msg.config.model || '';
+            document.getElementById('cfgAuthType').value = msg.config.authType || 'anthropic';
+            break;
+
+        case 'aiConfigSaved':
+            if (msg.success) {
+                const status = document.getElementById('configStatus');
+                status.textContent = '✅ Configuration saved!';
+                status.className = 'config-status success';
+                setTimeout(() => {
+                    document.getElementById('configPanel').classList.remove('open');
+                    document.getElementById('configBackdrop').classList.remove('open');
+                    status.textContent = '';
+                }, 1200);
+            } else {
+                const status = document.getElementById('configStatus');
+                status.textContent = '⚠️ ' + (msg.message || 'Save failed');
+                status.className = 'config-status error';
+            }
             break;
 
         case 'reset':

@@ -135,6 +135,12 @@ export class ProjectWizardProvider {
                     case 'reset':
                         this.resetWizard();
                         break;
+                    case 'getAiConfig':
+                        this.sendAiConfig();
+                        break;
+                    case 'saveAiConfig':
+                        await this.saveAiConfig(message.config);
+                        break;
                     case 'goToStep':
                         this.postMessage({ command: 'setStep', step: message.step });
                         break;
@@ -157,6 +163,34 @@ export class ProjectWizardProvider {
         this._state = this._defaultState();
         this._isProcessing = false;
         this.postMessage({ command: 'reset' });
+    }
+
+    private sendAiConfig() {
+        const config = this._aiConfig || { apiUrl: '', apiKey: '', model: '', authType: 'anthropic' };
+        this.postMessage({
+            command: 'aiConfigLoaded',
+            config: {
+                apiUrl: config.apiUrl,
+                apiKey: config.apiKey,
+                model: config.model,
+                authType: config.authType || 'anthropic'
+            }
+        });
+    }
+
+    private async saveAiConfig(config: AiConfig) {
+        try {
+            const configPath = path.join(this._extensionUri.fsPath, 'ai-config.json');
+            await fs.promises.writeFile(configPath, JSON.stringify(config, null, 2), 'utf-8');
+            this._aiConfig = config;
+            this.postMessage({ command: 'aiConfigSaved', success: true });
+        } catch (error) {
+            this.postMessage({
+                command: 'aiConfigSaved',
+                success: false,
+                message: `Failed to save: ${error instanceof Error ? error.message : 'Unknown error'}`
+            });
+        }
     }
 
     // ========================================================================
@@ -698,6 +732,7 @@ Make the code well-documented with comments explaining how each simulation compo
             <h1>FIDE Project Designer</h1>
         </div>
         <div class="header-actions">
+            <button id="settingsBtn" class="icon-btn" title="AI Settings">⚙️ Settings</button>
             <button id="resetBtn" class="icon-btn" title="Start over">🔄 New</button>
         </div>
     </div>
@@ -813,6 +848,46 @@ Make the code well-documented with comments explaining how each simulation compo
             <div class="spinner"></div>
             <div class="processing-text" id="processingText">Analyzing...</div>
             <div class="processing-sub" id="processingSub">This may take a moment</div>
+        </div>
+    </div>
+
+    <!-- AI Config Panel -->
+    <div class="config-backdrop" id="configBackdrop"></div>
+    <div class="config-panel" id="configPanel">
+        <div class="config-header">
+            <h2>⚙️ AI Configuration</h2>
+            <button class="config-close" id="configCloseBtn">✕</button>
+        </div>
+        <div class="config-body">
+            <div class="config-field">
+                <label for="cfgAuthType">API Type</label>
+                <select id="cfgAuthType">
+                    <option value="anthropic">Anthropic (Claude)</option>
+                    <option value="bearer">OpenAI-compatible (Bearer)</option>
+                </select>
+                <span class="config-hint">Anthropic uses x-api-key header; Bearer uses Authorization header</span>
+            </div>
+            <div class="config-field">
+                <label for="cfgApiUrl">API URL</label>
+                <input type="text" id="cfgApiUrl" placeholder="https://api.anthropic.com/v1/messages">
+            </div>
+            <div class="config-field">
+                <label for="cfgApiKey">API Key</label>
+                <div class="key-input-wrap">
+                    <input type="password" id="cfgApiKey" placeholder="sk-...">
+                    <button class="toggle-key-btn" id="toggleKeyBtn" title="Show/hide key">👁️</button>
+                </div>
+            </div>
+            <div class="config-field">
+                <label for="cfgModel">Model</label>
+                <input type="text" id="cfgModel" placeholder="claude-sonnet-4-5-20250929">
+                <span class="config-hint">e.g. claude-sonnet-4-5-20250929, gpt-4o, deepseek-chat</span>
+            </div>
+            <div class="config-status" id="configStatus"></div>
+            <div class="config-actions">
+                <button class="secondary-btn" id="configCancelBtn">Cancel</button>
+                <button class="primary-btn" id="configSaveBtn">💾 Save</button>
+            </div>
         </div>
     </div>
 
