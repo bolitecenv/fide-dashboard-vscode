@@ -110,3 +110,31 @@ export function toggleConfig() {
 export function getConnectionInfo() {
     return { wsConnected, wsPort, packetType };
 }
+
+export function sendBinary(bytes) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+        console.warn('WebSocket not connected, cannot send');
+        return false;
+    }
+    try {
+        ws.send(bytes.buffer || bytes);
+        return true;
+    } catch (e) {
+        console.error('WebSocket send error:', e);
+        return false;
+    }
+}
+
+export function sendText(text) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+        console.warn('WebSocket not connected, cannot send');
+        return false;
+    }
+    try {
+        ws.send(text);
+        return true;
+    } catch (e) {
+        console.error('WebSocket send error:', e);
+        return false;
+    }
+}

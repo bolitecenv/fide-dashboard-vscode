@@ -10,6 +10,8 @@ import * as TraceView from './modules/trace-view.js';
 import * as DltParser from './modules/dlt-parser.js';
 import * as WsManager from './modules/websocket-manager.js';
 import * as DebugView from './modules/debug-view.js';
+import * as ServiceParser from './modules/service-parser.js';
+import * as ServiceGenerator from './modules/service-generator.js';
 
 // ============================================================================
 // SHARED STATE
@@ -129,8 +131,15 @@ regionMouseMoveHandler = traceState.regionMouseMoveHandler;
 regionMouseUpHandler = traceState.regionMouseUpHandler;
 colorIndex = traceState.colorIndex;
 
-// Initialize DLT Parser
-DltParser.initDltParser();
+// Initialize DLT Parser (with service message callback)
+DltParser.initDltParser({
+    onServiceMessage: (packet) => {
+        const svc = ServiceParser.parseServiceMessage(packet);
+        if (svc) {
+            console.log('🔧 Service message:', svc);
+        }
+    }
+});
 
 // Initialize Debug View
 DebugView.initDebugView({ vscode });
@@ -143,6 +152,10 @@ WsManager.initWebSocketManager({
     binaryMessageHandler: (data) => DltParser.handleDltBinaryMessage(data, (msg) => {
         DltParser.displayDltMessage(msg);
         DebugView.captureDltLog(msg);
+        // Route DLT payload through text message handler for REG/chart/trace data
+        if (msg.payload && msg.payload !== '(empty)') {
+            handleMessage(msg.payload);
+        }
     })
 });
 
@@ -221,20 +234,23 @@ function setTimelineView(view) {
     const chartBtn = document.getElementById('chartViewBtn');
     const logsBtn = document.getElementById('logsViewBtn');
     const debugBtn = document.getElementById('debugViewBtn');
+    const servicesBtn = document.getElementById('servicesViewBtn');
     
     const timelineContainer = document.getElementById('timelineContainer');
     const chartContainer = document.getElementById('chartContainer');
     const logsContainer = document.getElementById('logsContainer');
     const debugContainer = document.getElementById('debugContainer');
+    const servicesContainer = document.getElementById('servicesContainer');
     
     // Update button states
-    [traceBtn, callBtn, chartBtn, logsBtn, debugBtn].forEach(btn => btn?.classList.remove('active'));
+    [traceBtn, callBtn, chartBtn, logsBtn, debugBtn, servicesBtn].forEach(btn => btn?.classList.remove('active'));
     
     // Hide all
     if (timelineContainer) timelineContainer.style.display = 'none';
     if (chartContainer) chartContainer.style.display = 'none';
     if (logsContainer) logsContainer.style.display = 'none';
     if (debugContainer) debugContainer.style.display = 'none';
+    if (servicesContainer) servicesContainer.style.display = 'none';
     
     if (view === 'trace') {
         traceBtn?.classList.add('active');
@@ -254,6 +270,10 @@ function setTimelineView(view) {
     } else if (view === 'debug') {
         debugBtn?.classList.add('active');
         if (debugContainer) debugContainer.style.display = 'flex';
+    } else if (view === 'services') {
+        servicesBtn?.classList.add('active');
+        if (servicesContainer) servicesContainer.style.display = 'flex';
+        updateServiceWsStatus();
     }
 }
 
@@ -318,6 +338,91 @@ function updateChartConfig(chartId, field, value) {
 }
 
 // ============================================================================
+// FILTER & SERVICE FUNCTIONS
+// ============================================================================
+
+function onFilterChange() {
+    const ecuId = document.getElementById('filterEcu')?.value || '';
+    const appId = document.getElementById('filterApp')?.value || '';
+    const ctxId = document.getElementById('filterCtx')?.value || '';
+    DltParser.setFilter(ecuId, appId, ctxId);
+    
+    // Update cascading dropdowns
+    DltParser.updateFilterDropdowns();
+    
+    // Update filter count indicator
+    const activeCount = [ecuId, appId, ctxId].filter(Boolean).length;
+    const countEl = document.getElementById('filterCount');
+    if (countEl) {
+        countEl.textContent = activeCount > 0 ? `(${activeCount} active)` : '';
+    }
+}
+
+function clearFilter() {
+    DltParser.setFilter(null, null, null);
+    const ecuEl = document.getElementById('filterEcu');
+    const appEl = document.getElementById('filterApp');
+    const ctxEl = document.getElementById('filterCtx');
+    if (ecuEl) ecuEl.value = '';
+    if (appEl) appEl.value = '';
+    if (ctxEl) ctxEl.value = '';
+    DltParser.updateFilterDropdowns();
+    const countEl = document.getElementById('filterCount');
+    if (countEl) countEl.textContent = '';
+}
+
+function onServiceTypeChange() {
+    const svcType = document.getElementById('svcType')?.value;
+    const targetFields = document.getElementById('svcTargetFields');
+    const injectionFields = document.getElementById('svcInjectionFields');
+    const logMsgFields = document.getElementById('svcLogMsgFields');
+    const logLevelField = document.getElementById('svcLogLevelField');
+    
+    // Hide all conditional fields
+    if (targetFields) targetFields.style.display = 'none';
+    if (injectionFields) injectionFields.style.display = 'none';
+    if (logMsgFields) logMsgFields.style.display = 'none';
+    
+    switch (svcType) {
+        case 'set_log_level':
+            if (targetFields) targetFields.style.display = 'flex';
+            if (logLevelField) logLevelField.style.display = '';
+            break;
+        case 'get_log_info':
+            if (targetFields) targetFields.style.display = 'flex';
+            if (logLevelField) logLevelField.style.display = 'none';
+            break;
+        case 'injection':
+            if (injectionFields) injectionFields.style.display = 'flex';
+            break;
+        case 'log_message':
+            if (logMsgFields) logMsgFields.style.display = 'flex';
+            break;
+        // get_default_log_level, get_sw_version: no extra fields
+    }
+}
+
+function handleSendService() {
+    ServiceGenerator.handleSendService();
+    const count = ServiceGenerator.getServiceHistory().length;
+    const badge = document.getElementById('svcHistoryCount');
+    if (badge) badge.textContent = count;
+}
+
+function updateServiceWsStatus() {
+    const statusEl = document.getElementById('svcWsStatus');
+    if (!statusEl) return;
+    const info = WsManager.getConnectionInfo();
+    if (info && info.wsConnected) {
+        statusEl.textContent = '🟢 Connected';
+        statusEl.style.color = '#4ec9b0';
+    } else {
+        statusEl.textContent = '⚪ Not connected';
+        statusEl.style.color = 'var(--vscode-descriptionForeground)';
+    }
+}
+
+// ============================================================================
 // EXPOSE TO GLOBAL SCOPE (for HTML onclick/onchange handlers)
 // ============================================================================
 
@@ -335,6 +440,12 @@ window.exportCurrentView = exportCurrentView;
 window.addChart = addChart;
 window.removeChart = removeChart;
 window.updateChartConfig = updateChartConfig;
+
+// Filter & service functions
+window.onFilterChange = onFilterChange;
+window.clearFilter = clearFilter;
+window.onServiceTypeChange = onServiceTypeChange;
+window.handleSendService = handleSendService;
 
 // Debug view functions
 function startBuild() { DebugView.startBuild(); }
@@ -373,6 +484,8 @@ window.traceView = TraceView;
 window.dltParser = DltParser;
 window.wsManager = WsManager;
 window.debugView = DebugView;
+window.serviceParser = ServiceParser;
+window.serviceGenerator = ServiceGenerator;
 
 // ============================================================================
 // INITIALIZATION
@@ -383,6 +496,14 @@ window.addEventListener('load', async () => {
     
     // Initialize WASM module first
     await DltParser.initWasm();
+    
+    // Initialize service modules with WASM
+    if (DltParser.isWasmReady()) {
+        const wasm = DltParser.getWasmModule();
+        ServiceParser.initServiceParser(wasm);
+        ServiceGenerator.initServiceGenerator(wasm, WsManager);
+        console.log('🔧 Service parser & generator initialized');
+    }
     
     // Load debug config
     vscode.postMessage({ command: 'loadDebugConfig' });

@@ -174,6 +174,9 @@ export class DltViewerProvider {
                     <button class="timeline-view-btn" id="debugViewBtn" onclick="setTimelineView('debug')">
                         🔨 Build+Debug
                     </button>
+                    <button class="timeline-view-btn" id="servicesViewBtn" onclick="setTimelineView('services')">
+                        🔧 Services
+                    </button>
                 </div>
             </div>
 
@@ -293,6 +296,20 @@ export class DltViewerProvider {
                             <span class="stats-label" style="margin-left: 12px;">Errors:</span>
                             <span class="stats-value error" id="dltIncorrectCount2">0</span>
                         </div>
+                    </div>
+                    <div class="log-filter-bar">
+                        <label class="filter-label">Filter:</label>
+                        <select id="filterEcu" onchange="onFilterChange()">
+                            <option value="">All ECUs</option>
+                        </select>
+                        <select id="filterApp" onchange="onFilterChange()">
+                            <option value="">All Apps</option>
+                        </select>
+                        <select id="filterCtx" onchange="onFilterChange()">
+                            <option value="">All Contexts</option>
+                        </select>
+                        <button class="filter-clear-btn" onclick="clearFilter()" title="Clear filter">✖</button>
+                        <span class="filter-count" id="filterCount"></span>
                     </div>
                     <div class="log-list" id="logList">
                         <div class="log-empty">
@@ -420,6 +437,112 @@ export class DltViewerProvider {
                         </div>
                         <div class="ai-debug-output" id="aiDebugOutput">
                             <div class="debug-output-empty">Ask AI to analyze build errors, runtime issues, or DLT logs.<br>AI has access to build output, run output, GDB output, and DLT log buffer.</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Services Container -->
+                <div class="services-container" id="servicesContainer" style="display: none;">
+                    <div class="svc-panel">
+                        <div class="svc-header">
+                            <h3>🔧 DLT Service Generator</h3>
+                            <span class="svc-ws-status" id="svcWsStatus">⚪ Not connected</span>
+                        </div>
+                        <div class="svc-form">
+                            <div class="svc-row">
+                                <div class="svc-field">
+                                    <label>Service Type</label>
+                                    <select id="svcType" onchange="onServiceTypeChange()">
+                                        <option value="set_log_level">SetLogLevel</option>
+                                        <option value="get_log_info">GetLogInfo</option>
+                                        <option value="get_default_log_level">GetDefaultLogLevel</option>
+                                        <option value="get_sw_version">GetSoftwareVersion</option>
+                                        <option value="injection">Injection Message</option>
+                                        <option value="log_message">Log Message</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="svc-row">
+                                <div class="svc-field svc-sm">
+                                    <label>ECU ID</label>
+                                    <input type="text" id="svcEcu" value="ECU1" maxlength="4" placeholder="ECU1">
+                                </div>
+                                <div class="svc-field svc-sm">
+                                    <label>APP ID</label>
+                                    <input type="text" id="svcApp" value="DA1" maxlength="4" placeholder="DA1">
+                                </div>
+                                <div class="svc-field svc-sm">
+                                    <label>CTX ID</label>
+                                    <input type="text" id="svcCtx" value="DC1" maxlength="4" placeholder="DC1">
+                                </div>
+                            </div>
+                            <!-- SetLogLevel / GetLogInfo specific fields -->
+                            <div class="svc-row svc-conditional" id="svcTargetFields">
+                                <div class="svc-field svc-sm">
+                                    <label>Target APP</label>
+                                    <input type="text" id="svcTargetApp" value="LOG" maxlength="4" placeholder="LOG">
+                                </div>
+                                <div class="svc-field svc-sm">
+                                    <label>Target CTX</label>
+                                    <input type="text" id="svcTargetCtx" value="TEST" maxlength="4" placeholder="TEST">
+                                </div>
+                                <div class="svc-field svc-sm" id="svcLogLevelField">
+                                    <label>Log Level</label>
+                                    <select id="svcLogLevel">
+                                        <option value="1">1 - Fatal</option>
+                                        <option value="2">2 - Error</option>
+                                        <option value="3">3 - Warn</option>
+                                        <option value="4" selected>4 - Info</option>
+                                        <option value="5">5 - Debug</option>
+                                        <option value="6">6 - Verbose</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <!-- Injection specific fields -->
+                            <div class="svc-row svc-conditional" id="svcInjectionFields" style="display: none;">
+                                <div class="svc-field svc-sm">
+                                    <label>Service ID (hex)</label>
+                                    <input type="text" id="svcInjectionId" value="0xFFF" placeholder="0xFFF">
+                                </div>
+                                <div class="svc-field">
+                                    <label>Payload</label>
+                                    <input type="text" id="svcInjectionPayload" placeholder="injection payload">
+                                </div>
+                            </div>
+                            <!-- Log Message specific fields -->
+                            <div class="svc-row svc-conditional" id="svcLogMsgFields" style="display: none;">
+                                <div class="svc-field svc-sm">
+                                    <label>Log Level</label>
+                                    <select id="svcLogMsgLevel">
+                                        <option value="1">Fatal</option>
+                                        <option value="2">Error</option>
+                                        <option value="3">Warn</option>
+                                        <option value="4" selected>Info</option>
+                                        <option value="5">Debug</option>
+                                        <option value="6">Verbose</option>
+                                    </select>
+                                </div>
+                                <div class="svc-field svc-xs">
+                                    <label>Verbose</label>
+                                    <input type="checkbox" id="svcVerbose" checked>
+                                </div>
+                                <div class="svc-field">
+                                    <label>Payload</label>
+                                    <input type="text" id="svcLogPayload" value="test" placeholder="log message text">
+                                </div>
+                            </div>
+                            <div class="svc-actions">
+                                <button onclick="handleSendService()" class="svc-send-btn">📤 Send</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="svc-history-panel">
+                        <div class="svc-history-header">
+                            <span>📜 Service History</span>
+                            <span class="badge" id="svcHistoryCount">0</span>
+                        </div>
+                        <div class="svc-history-list" id="svcHistory">
+                            <div class="svc-history-empty">No messages sent yet</div>
                         </div>
                     </div>
                 </div>

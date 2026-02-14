@@ -17,7 +17,25 @@ let dltPacketBuffer = new Uint8Array(0);
 let dltMessagesReceived = 0;
 let dltMessagesIncorrect = 0;
 
-export function initDltParser() {
+// ID Registry: tracks all seen ECU > APP > CTX hierarchy
+const idRegistry = {
+    ecus: new Map() // ecuId -> { apps: Map(appId -> Set(ctxId)) }
+};
+
+// Active filters
+let activeFilter = {
+    ecuId: null,  // null = all
+    appId: null,
+    ctxId: null
+};
+
+// Service message callback
+let serviceMessageCallback = null;
+
+export function initDltParser(opts) {
+    if (opts && opts.onServiceMessage) {
+        serviceMessageCallback = opts.onServiceMessage;
+    }
     return { dltPacketBuffer, dltMessagesReceived, dltMessagesIncorrect };
 }
 
@@ -47,6 +65,14 @@ export async function initWasm() {
         wasmInitialized = false;
         return false;
     }
+}
+
+export function getWasmModule() {
+    return wasmModule;
+}
+
+export function isWasmReady() {
+    return wasmInitialized && wasmModule !== null;
 }
 
 export function handleDltBinaryMessage(data, displayCallback) {
@@ -106,6 +132,14 @@ export function handleDltBinaryMessage(data, displayCallback) {
                 dltMessagesReceived++;
                 updateDltStats();
                 console.log('✅ DLT Message:', parsedMessage);
+                
+                // Register the IDs
+                registerIds(parsedMessage.ecuId, parsedMessage.appId, parsedMessage.ctxId);
+                
+                // Check if it passes the filter
+                if (!passesFilter(parsedMessage)) {
+                    continue;
+                }
                 
                 if (displayCallback) {
                     displayCallback(parsedMessage);
@@ -192,6 +226,11 @@ function parseDltPacket(packet) {
                         const freshMemory = new Uint8Array(freshBuffer);
                         const formatted = freshMemory.slice(formattedPtr, formattedPtr + payloadFormatLen);
                         payload = new TextDecoder().decode(formatted);
+                        // WASM format_verbose_payload prefixes each argument with '#'
+                        // e.g. "#Hello world" — strip the leading '#' delimiter
+                        if (payload.startsWith('#')) {
+                            payload = payload.substring(1);
+                        }
                     }
                 } else {
                     // Fallback: raw payload decode (payloadOffset is relative to message start)
@@ -349,4 +388,135 @@ export function resetDltStats() {
     dltMessagesIncorrect = 0;
     updateDltStats();
     return { dltPacketBuffer, dltMessagesReceived, dltMessagesIncorrect };
+}
+
+// ============================================================================
+// ID REGISTRY & FILTERING
+// ============================================================================
+
+function registerIds(ecuId, appId, ctxId) {
+    if (!ecuId || ecuId === 'UNKNOWN') return;
+    
+    if (!idRegistry.ecus.has(ecuId)) {
+        idRegistry.ecus.set(ecuId, { apps: new Map() });
+    }
+    const ecu = idRegistry.ecus.get(ecuId);
+    
+    if (appId && appId !== 'UNKNOWN') {
+        if (!ecu.apps.has(appId)) {
+            ecu.apps.set(appId, new Set());
+        }
+        if (ctxId && ctxId !== 'UNKNOWN') {
+            ecu.apps.get(appId).add(ctxId);
+        }
+    }
+    
+    // Notify UI to update dropdown
+    updateFilterDropdowns();
+}
+
+function passesFilter(msg) {
+    if (activeFilter.ecuId && msg.ecuId !== activeFilter.ecuId) return false;
+    if (activeFilter.appId && msg.appId !== activeFilter.appId) return false;
+    if (activeFilter.ctxId && msg.ctxId !== activeFilter.ctxId) return false;
+    return true;
+}
+
+export function setFilter(ecuId, appId, ctxId) {
+    activeFilter.ecuId = ecuId || null;
+    activeFilter.appId = appId || null;
+    activeFilter.ctxId = ctxId || null;
+}
+
+export function getFilter() {
+    return { ...activeFilter };
+}
+
+export function getIdRegistry() {
+    const result = {};
+    idRegistry.ecus.forEach((ecu, ecuId) => {
+        result[ecuId] = {};
+        ecu.apps.forEach((ctxSet, appId) => {
+            result[ecuId][appId] = Array.from(ctxSet);
+        });
+    });
+    return result;
+}
+
+export function clearIdRegistry() {
+    idRegistry.ecus.clear();
+    updateFilterDropdowns();
+}
+
+export function updateFilterDropdowns() {
+    const ecuSelect = document.getElementById('filterEcu');
+    const appSelect = document.getElementById('filterApp');
+    const ctxSelect = document.getElementById('filterCtx');
+    
+    if (!ecuSelect) return;
+    
+    const currentEcu = ecuSelect.value;
+    const currentApp = appSelect?.value;
+    const currentCtx = ctxSelect?.value;
+    
+    // Update ECU dropdown
+    const ecuOptions = ['<option value="">All ECUs</option>'];
+    idRegistry.ecus.forEach((_, ecuId) => {
+        const sel = ecuId === currentEcu ? ' selected' : '';
+        ecuOptions.push(`<option value="${ecuId}"${sel}>${ecuId}</option>`);
+    });
+    ecuSelect.innerHTML = ecuOptions.join('');
+    
+    // Update APP dropdown based on selected ECU
+    if (appSelect) {
+        const appOptions = ['<option value="">All Apps</option>'];
+        if (currentEcu && idRegistry.ecus.has(currentEcu)) {
+            idRegistry.ecus.get(currentEcu).apps.forEach((_, appId) => {
+                const sel = appId === currentApp ? ' selected' : '';
+                appOptions.push(`<option value="${appId}"${sel}>${appId}</option>`);
+            });
+        } else {
+            // Show all apps from all ECUs
+            const allApps = new Set();
+            idRegistry.ecus.forEach(ecu => {
+                ecu.apps.forEach((_, appId) => allApps.add(appId));
+            });
+            allApps.forEach(appId => {
+                const sel = appId === currentApp ? ' selected' : '';
+                appOptions.push(`<option value="${appId}"${sel}>${appId}</option>`);
+            });
+        }
+        appSelect.innerHTML = appOptions.join('');
+    }
+    
+    // Update CTX dropdown based on selected ECU+APP
+    if (ctxSelect) {
+        const ctxOptions = ['<option value="">All Contexts</option>'];
+        const allCtxs = new Set();
+        
+        if (currentEcu && currentApp && idRegistry.ecus.has(currentEcu)) {
+            const ecu = idRegistry.ecus.get(currentEcu);
+            if (ecu.apps.has(currentApp)) {
+                ecu.apps.get(currentApp).forEach(ctxId => allCtxs.add(ctxId));
+            }
+        } else if (currentApp) {
+            idRegistry.ecus.forEach(ecu => {
+                if (ecu.apps.has(currentApp)) {
+                    ecu.apps.get(currentApp).forEach(ctxId => allCtxs.add(ctxId));
+                }
+            });
+        } else {
+            idRegistry.ecus.forEach(ecu => {
+                ecu.apps.forEach(ctxSet => {
+                    ctxSet.forEach(ctxId => allCtxs.add(ctxId));
+                });
+            });
+        }
+        
+        allCtxs.forEach(ctxId => {
+            const sel = ctxId === currentCtx ? ' selected' : '';
+            ctxOptions.push(`<option value="${ctxId}"${sel}>${ctxId}</option>`);
+        });
+        ctxSelect.innerHTML = ctxOptions.join('');
+    }
 }
