@@ -520,6 +520,11 @@ body {
     background: rgba(63, 185, 80, 0.06);
 }
 
+.build-status-banner.warn {
+    border-left-color: #d29922;
+    background: rgba(210, 153, 34, 0.06);
+}
+
 .build-status-icon {
     font-size: 13px;
 }

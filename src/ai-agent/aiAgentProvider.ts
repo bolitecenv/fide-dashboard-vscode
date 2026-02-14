@@ -46,6 +46,8 @@ export class AiAgentProvider {
     private _buildOutput: string[] = [];
     private _runOutput: string[] = [];
     private _gdbOutput: string[] = [];
+    private _rttBuffer: string[] = [];
+    private _rttMarkerSeen = false;
     private _buildConfig: BuildConfig = {
         buildCmd: 'cargo build',
         runCmd: 'cargo run',
@@ -165,6 +167,77 @@ export class AiAgentProvider {
         }
     }
 
+    /**
+     * Trim message history to keep token count low.
+     * Never splits tool_use/tool_result pairs — trims at safe turn boundaries.
+     * Keeps the first user message + the most recent turns within budget.
+     */
+    private trimMessages(): Message[] {
+        const MAX_MESSAGES = 20;
+        const MAX_TOOL_RESULT_LEN = 2000;
+
+        const msgs = this._messages;
+        if (msgs.length <= MAX_MESSAGES) {
+            return msgs.map(m => this.compactMessage(m, MAX_TOOL_RESULT_LEN));
+        }
+
+        // Find safe cut points: indices where a new "turn" starts.
+        // A turn = user text msg, or assistant msg that is NOT preceded by a tool_result.
+        // We must never cut between an assistant(tool_use) and its user(tool_result).
+        const safeCuts: number[] = [0]; // index 0 is always safe
+        for (let i = 1; i < msgs.length; i++) {
+            const prev = msgs[i - 1];
+            const curr = msgs[i];
+            // If current is an assistant message, it's safe to cut here
+            // UNLESS the previous message is also assistant (shouldn't happen, but guard)
+            if (curr.role === 'assistant') {
+                safeCuts.push(i);
+            }
+            // If current is a user message with plain string content (not tool_result), safe cut
+            if (curr.role === 'user' && typeof curr.content === 'string') {
+                safeCuts.push(i);
+            }
+            // If current is user with array content containing tool_result,
+            // it MUST follow its matching assistant tool_use — NOT a safe cut point
+        }
+
+        // Pick the latest safe cut that keeps at most MAX_MESSAGES
+        let cutIndex = 0;
+        for (const idx of safeCuts) {
+            if (msgs.length - idx <= MAX_MESSAGES - 1) { // -1 for the first message we always keep
+                cutIndex = idx;
+                break;
+            }
+        }
+        // If no good cut found, use the latest safe cut
+        if (cutIndex === 0 && safeCuts.length > 1) {
+            cutIndex = safeCuts[safeCuts.length - 1];
+        }
+
+        const trimmed = cutIndex <= 1
+            ? msgs
+            : [msgs[0], ...msgs.slice(cutIndex)];
+
+        return trimmed.map(m => this.compactMessage(m, MAX_TOOL_RESULT_LEN));
+    }
+
+    private compactMessage(msg: Message, maxToolLen: number): Message {
+        if (!Array.isArray(msg.content)) { return msg; }
+
+        const compacted = msg.content.map((block: any) => {
+            // Anthropic tool_result blocks
+            if (block.type === 'tool_result' && typeof block.content === 'string' && block.content.length > maxToolLen) {
+                return { ...block, content: block.content.substring(0, maxToolLen) + '\n...[trimmed]' };
+            }
+            // OpenAI tool role messages
+            if (msg.role === 'user' && typeof block.content === 'string' && block.content.length > maxToolLen) {
+                return { ...block, content: block.content.substring(0, maxToolLen) + '\n...[trimmed]' };
+            }
+            return block;
+        });
+        return { ...msg, content: compacted };
+    }
+
     private async callAI(): Promise<void> {
         if (!this._aiConfig) {
             throw new Error('AI configuration not loaded');
@@ -242,12 +315,13 @@ export class AiAgentProvider {
             },
             {
                 name: "run_project",
-                description: "Run the project using the configured run command. Returns output and exit code. Useful for testing after a successful build.",
+                description: "Run the project using the configured run command (typically 'cargo run' which triggers probe-rs to flash and open RTT). Monitors stdout/stderr for RTT output. Waits for the '#AI working' marker to confirm code is running on target. If marker is not seen within timeout, it means the MCU core has hung. Returns all captured RTT output and whether '#AI working' was detected.",
                 input_schema: {
                     type: "object",
                     properties: {
-                        command: { type: "string", description: "Optional override run command. If not provided, uses configured run command." },
-                        timeout: { type: "number", description: "Timeout in ms (default 30000). Use shorter timeouts for quick tests." }
+                        command: { type: "string", description: "Optional override run command. Default: configured run command (cargo run with probe-rs)." },
+                        timeout: { type: "number", description: "Timeout in ms to wait for '#AI working' marker (default 30000). Process keeps running after marker is seen." },
+                        marker: { type: "string", description: "Optional custom marker string to wait for (default: '#AI working')." }
                     },
                     required: []
                 }
@@ -321,40 +395,29 @@ export class AiAgentProvider {
                     },
                     required: []
                 }
+            },
+            {
+                name: "get_rtt_output",
+                description: "Get the accumulated RTT output from probe-rs since the last run_project call. Use this to check for runtime errors, panics, or additional log messages while the target is still running.",
+                input_schema: {
+                    type: "object",
+                    properties: {
+                        clear: { type: "boolean", description: "If true, clears the RTT buffer after reading (default false)." }
+                    },
+                    required: []
+                }
             }
         ];
 
-        const systemPrompt = `You are an AI-powered coding and debugging agent for embedded development projects in VS Code. You can write code, build, run, debug with GDB, and automatically fix errors.
+        const systemPrompt = `Embedded dev AI agent. Workspace: ${this._workspaceRoot || 'N/A'}. Config: ${JSON.stringify(this._buildConfig)}
 
-Current workspace: ${this._workspaceRoot || 'Not set'}
-Build config: ${JSON.stringify(this._buildConfig)}
-
-Capabilities:
-- **Code**: Search, read, write files in the workspace
-- **Build**: Build the project and analyze compiler errors
-- **Run**: Execute the project and capture output
-- **Debug**: Start GDB sessions, set breakpoints, inspect variables
-- **Auto-fix**: Build → analyze errors → fix code → rebuild (iterate until success)
-
-Auto Build-Fix workflow:
-1. Use build_project to compile
-2. If build fails, analyze the error output
-3. Use read_file to see the problematic code
-4. Use write_file to fix the code
-5. Use build_project again to verify the fix
-6. Repeat until build succeeds
-
-Guidelines:
-- Be concise and direct in responses
-- Use tools to gather information before answering
-- Format responses with markdown (code blocks, lists, bold)
-- When writing code, use fenced code blocks with language identifiers
-- When asked to build and fix, use the iterative auto-fix loop
-- When debugging, start GDB, get backtrace, read relevant source, then explain
-- Always show what you found and what you changed`;
+Workflow: build_project→fix errors→run_project (flashes via probe-rs, monitors .log/rtt.log for '#AI working' marker)→if no marker=MCU hung, fix & retry.
+RTT logs are in .log/rtt.log file (not stdout). Always add rprintln!("#AI working"); after init in generated code.
+Panic patterns: panicked at, HardFault, panic_halt, PANIC, stack overflow, abort().
+Be concise. Use markdown. Show changes.`;
 
         let continueLoop = true;
-        const maxIterations = 15;
+        const maxIterations = 25;
         let iteration = 0;
 
         while (continueLoop && this._isProcessing && iteration < maxIterations) {
@@ -374,10 +437,10 @@ Guidelines:
                     headers['Authorization'] = `Bearer ${this._aiConfig.apiKey}`;
                     requestBody = {
                         model: this._aiConfig.model,
-                        max_tokens: 4096,
+                        max_tokens: 2048,
                         messages: [
                             { role: 'system', content: systemPrompt },
-                            ...this._messages
+                            ...this.trimMessages()
                         ],
                         tools: tools.map(t => ({
                             type: 'function',
@@ -394,9 +457,9 @@ Guidelines:
                     headers['anthropic-version'] = '2023-06-01';
                     requestBody = {
                         model: this._aiConfig.model,
-                        max_tokens: 4096,
+                        max_tokens: 2048,
                         system: systemPrompt,
-                        messages: this._messages,
+                        messages: this.trimMessages(),
                         tools: tools
                     };
                 }
@@ -579,7 +642,7 @@ Guidelines:
                 case 'build_project':
                     return await this.buildProject(input.command);
                 case 'run_project':
-                    return await this.runProject(input.command, input.timeout);
+                    return await this.runProject(input.command, input.timeout, input.marker);
                 case 'start_gdb':
                     return await this.startGdb(input.elfPath, input.initCommands);
                 case 'send_gdb_command':
@@ -592,6 +655,8 @@ Guidelines:
                     return this.saveBuildConfig(input);
                 case 'get_diagnostics':
                     return await this.getDiagnostics(input.path);
+                case 'get_rtt_output':
+                    return this.getRttOutput(input.clear);
                 default:
                     return `Unknown tool: ${toolName}`;
             }
@@ -617,8 +682,8 @@ Guidelines:
         const fullPath = path.join(this._workspaceRoot, filePath);
         try {
             const content = await fs.promises.readFile(fullPath, 'utf-8');
-            if (content.length > 50000) {
-                return content.substring(0, 50000) + '\n\n... [truncated]';
+            if (content.length > 8000) {
+                return content.substring(0, 8000) + '\n... [truncated]';
             }
             return content;
         } catch {
@@ -646,8 +711,8 @@ Guidelines:
                 if (stdout) { output += stdout; }
                 if (stderr) { output += (output ? '\n' : '') + stderr; }
                 if (error && !output) { output = `Command failed: ${error.message}`; }
-                if (output.length > 10000) {
-                    output = output.substring(0, 10000) + '\n... [truncated]';
+                if (output.length > 4000) {
+                    output = output.substring(0, 4000) + '\n... [truncated]';
                 }
                 resolve(output || 'Command completed with no output.');
             });
@@ -736,7 +801,7 @@ Guidelines:
                 
                 let result = `Build ${status} (exit code ${exitCode})`;
                 if (output) {
-                    result += '\n\n' + (output.length > 8000 ? output.substring(0, 8000) + '\n... [truncated]' : output);
+                    result += '\n\n' + (output.length > 4000 ? output.substring(0, 4000) + '\n... [truncated]' : output);
                 }
                 resolve(result);
             });
@@ -748,59 +813,147 @@ Guidelines:
         });
     }
 
-    private async runProject(command?: string, timeout?: number): Promise<string> {
+    private async runProject(command?: string, timeout?: number, marker?: string): Promise<string> {
         const cwd = this._workspaceRoot || process.cwd();
         const cmd = command || this._buildConfig.runCmd;
         const timeoutMs = timeout || 30000;
+        const expectedMarker = marker || '#AI working';
+        const rttLogDir = path.join(cwd, '.log');
+        const rttLogPath = path.join(rttLogDir, 'rtt.log');
 
         this._killProcess(this._runProcess);
         this._runOutput = [];
+        this._rttBuffer = [];
+        this._rttMarkerSeen = false;
+
+        // Create .log dir and clear rtt.log for fresh run
+        try {
+            await fs.promises.mkdir(rttLogDir, { recursive: true });
+            await fs.promises.writeFile(rttLogPath, '', 'utf-8');
+        } catch { /* ignore */ }
+
+        // Open log file for appending RTT lines
+        let logFd: fs.promises.FileHandle | undefined;
+        try { logFd = await fs.promises.open(rttLogPath, 'a'); } catch { /* ignore */ }
 
         this.postMessage({ command: 'addBuildStatus', status: 'running', cmd });
 
         return new Promise((resolve) => {
             const parts = cmd.split(/\s+/);
             this._runProcess = spawn(parts[0], parts.slice(1), {
-                cwd,
-                shell: true,
-                env: { ...process.env }
+                cwd, shell: true, env: { ...process.env }
             });
 
-            const timer = setTimeout(() => {
-                this._killProcess(this._runProcess);
-                const output = this._runOutput.join('');
-                this.postMessage({ command: 'addBuildStatus', status: 'timeout' });
-                resolve(`Run timed out after ${timeoutMs}ms\n\nOutput:\n${output}`);
+            let resolved = false;
+            let markerTimer: NodeJS.Timeout | undefined;
+
+            const finishWithResult = (result: string) => {
+                if (resolved) { return; }
+                resolved = true;
+                if (markerTimer) { clearTimeout(markerTimer); }
+                if (logFd) { logFd.close().catch(() => {}); logFd = undefined; }
+                resolve(result);
+            };
+
+            // Timeout waiting for marker
+            markerTimer = setTimeout(() => {
+                if (resolved) { return; }
+                this.postMessage({ command: 'addBuildStatus', status: 'rtt-timeout' });
+                const rtt = this._rttBuffer.join('\n');
+                finishWithResult(`⚠️ No '${expectedMarker}' in ${timeoutMs}ms — MCU may be hung.\nRTT (${this._rttBuffer.length} lines):\n${rtt || '(empty)'}`);
             }, timeoutMs);
 
-            this._runProcess.stdout?.on('data', (data: Buffer) => {
-                this._runOutput.push(data.toString());
-            });
+            // Probe-rs error patterns
+            const probeErrorPats = [
+                'Failed to open probe', 'could not open interface',
+                'USB error', 'No probe found', 'probe not found',
+                'Failed to attach', 'Target not found',
+                'Failed to erase', 'Failed to write',
+                'The connected probe does not support'
+            ];
 
-            this._runProcess.stderr?.on('data', (data: Buffer) => {
-                this._runOutput.push(data.toString());
-            });
+            // Process each line from stdout/stderr (probe-rs RTT comes here)
+            const processLine = (line: string) => {
+                if (resolved) { return; }
+                this._rttBuffer.push(line);
+                // Append to log file
+                if (logFd) { logFd.write(line + '\n').catch(() => {}); }
+
+                // Check probe errors
+                for (const pat of probeErrorPats) {
+                    if (line.includes(pat)) {
+                        this.postMessage({ command: 'addBuildStatus', status: 'probe-error' });
+                        finishWithResult(`🔌 PROBE ERROR: ${pat}\nReconnect USB or check probe-rs config.\n\nOutput:\n${this._rttBuffer.join('\n').substring(0, 2000)}`);
+                        return;
+                    }
+                }
+
+                // Check marker
+                if (!this._rttMarkerSeen && line.includes(expectedMarker)) {
+                    this._rttMarkerSeen = true;
+                    this.postMessage({ command: 'addBuildStatus', status: 'rtt-ok' });
+                    finishWithResult(`✅ '${expectedMarker}' detected — running on target!\nRTT (${this._rttBuffer.length} lines):\n${this._rttBuffer.join('\n')}`);
+                    return;
+                }
+
+                // Check panics
+                const panicPats = ['panicked at', 'HardFault', 'panic_halt', 'PANIC', 'stack overflow', 'abort()'];
+                for (const pat of panicPats) {
+                    if (line.includes(pat)) {
+                        this.postMessage({ command: 'addBuildStatus', status: 'rtt-panic' });
+                        finishWithResult(`❌ PANIC: '${pat}'\nRTT:\n${this._rttBuffer.join('\n')}`);
+                        return;
+                    }
+                }
+            };
+
+            const onData = (data: Buffer) => {
+                const text = data.toString();
+                this._runOutput.push(text);
+                for (const line of text.split('\n')) {
+                    const t = line.trim();
+                    if (t) { processLine(t); }
+                }
+            };
+
+            this._runProcess.stdout?.on('data', onData);
+            this._runProcess.stderr?.on('data', onData);
 
             this._runProcess.on('close', (code: number | null) => {
-                clearTimeout(timer);
+                if (resolved) { return; }
                 const exitCode = code ?? -1;
-                const output = this._runOutput.join('');
+
+                if (exitCode !== 0 && this._rttBuffer.length === 0) {
+                    this.postMessage({ command: 'addBuildStatus', status: 'error', exitCode });
+                    const out = this._runOutput.join('');
+                    finishWithResult(`🔌 Flash/probe failed (exit ${exitCode})\n${out.substring(0, 2000) || '(no output)'}`);
+                    return;
+                }
+
                 const status = exitCode === 0 ? 'stopped' : 'error';
                 this.postMessage({ command: 'addBuildStatus', status, exitCode });
-                
+                const rtt = this._rttBuffer.join('\n');
                 let result = `Process exited (code ${exitCode})`;
-                if (output) {
-                    result += '\n\n' + (output.length > 8000 ? output.substring(0, 8000) + '\n... [truncated]' : output);
-                }
-                resolve(result);
+                result += this._rttMarkerSeen ? ' — marker seen' : ` — ⚠️ '${expectedMarker}' NEVER seen`;
+                result += `\nRTT:\n${rtt || '(none)'}`;
+                finishWithResult(result);
             });
 
             this._runProcess.on('error', (err: Error) => {
-                clearTimeout(timer);
                 this.postMessage({ command: 'addBuildStatus', status: 'error' });
-                resolve(`Run error: ${err.message}`);
+                finishWithResult(`Run error: ${err.message}`);
             });
         });
+    }
+
+    private getRttOutput(clear?: boolean): string {
+        if (this._rttBuffer.length === 0) {
+            return 'No RTT output. Run run_project first.';
+        }
+        const output = this._rttBuffer.join('\n');
+        const result = `RTT: ${this._rttBuffer.length} lines, marker: ${this._rttMarkerSeen ? 'YES' : 'NO'}, process: ${this._runProcess && !this._runProcess.killed ? 'running' : 'stopped'}\n${output}`;
+        if (clear) { this._rttBuffer = []; }
+        return result;
     }
 
     private async startGdb(elfPath?: string, initCommands?: string): Promise<string> {
@@ -985,14 +1138,14 @@ Guidelines:
                 <svg width="32" height="32" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1L9.5 5.5L14 6L10.5 9L11.5 14L8 11.5L4.5 14L5.5 9L2 6L6.5 5.5L8 1Z"/></svg>
             </div>
             <h2>Code, Build, Debug & Fix</h2>
-            <p class="empty-state-description">I can write code, build your project, debug with GDB, analyze errors, and auto-fix issues — all in one agent.</p>
+            <p class="empty-state-description">I can write code, build, flash via probe-rs, monitor RTT logs, debug with GDB, and auto-fix issues.</p>
             <div class="empty-suggestions" id="emptySuggestions">
                 <button class="suggestion-chip" data-prompt="Build the project and fix any errors automatically">&#x1F528; Build &amp; auto-fix errors</button>
+                <button class="suggestion-chip" data-prompt="Build the project, flash it via probe-rs, and monitor RTT output. Check for '#AI working' marker to confirm it runs.">&#x1F4E1; Build, flash &amp; monitor RTT</button>
+                <button class="suggestion-chip" data-prompt="Build, flash, and validate the firmware runs. If '#AI working' is not seen, analyze the hang and fix the code, then retry.">&#x1F504; Auto build-flash-fix loop</button>
                 <button class="suggestion-chip" data-prompt="Show the current build configuration">&#x2699;&#xFE0F; Show build config</button>
-                <button class="suggestion-chip" data-prompt="Build the project, run it, and report the output">&#x25B6;&#xFE0F; Build &amp; run</button>
                 <button class="suggestion-chip" data-prompt="Analyze all compiler errors and warnings, then fix them">&#x1F41B; Fix all diagnostics</button>
                 <button class="suggestion-chip" data-prompt="Show me the project structure">&#x1F4C1; Show project structure</button>
-                <button class="suggestion-chip" data-prompt="Explain the main entry point of this project">&#x1F4D6; Explain entry point</button>
             </div>
         </div>
     </div>

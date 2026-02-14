@@ -1,0 +1,8 @@
+{
+  "buildCmd": "cargo build -Zjson-target-spec",
+  "runCmd": "cargo run -Zjson-target-spec",
+  "gdbCmd": "arm-none-eabi-gdb",
+  "gdbTarget": "localhost:3333",
+  "elfPath": "target/thumbv7em-none-eabihf/debug/firmware",
+  "gdbInitCmds": "target remote localhost:3333\nmonitor reset halt\nload\ncontinue"
+}

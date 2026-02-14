@@ -30,14 +30,18 @@ let isThinking = false;
 
     if (clearBtn) {
         clearBtn.addEventListener('click', function () {
+            isThinking = false;
+            setThinking(false);
             vscode.postMessage({ command: 'clearChat' });
         });
     }
 
-    // Suggestion chips
+    // Suggestion chips — force-send even if isThinking is stale
     document.addEventListener('click', function (e) {
         const chip = e.target.closest('.suggestion-chip');
         if (chip && chip.dataset.prompt) {
+            // Reset stale thinking state so chips always work
+            isThinking = false;
             sendMessage(chip.dataset.prompt);
         }
     });
@@ -204,13 +208,14 @@ function formatToolLabel(toolName, input) {
         case 'execute_command': return 'Running `' + (input.command || '') + '`';
         case 'list_directory': return 'Listing ' + (input.path || '.');
         case 'build_project': return 'Building project' + (input.command ? ': ' + input.command : '');
-        case 'run_project': return 'Running project' + (input.command ? ': ' + input.command : '');
+        case 'run_project': return 'Flashing & monitoring RTT' + (input.command ? ': ' + input.command : '');
         case 'start_gdb': return 'Starting GDB session';
         case 'send_gdb_command': return 'GDB: ' + (input.command || '');
         case 'stop_process': return 'Stopping ' + (input.process || 'process');
         case 'get_build_config': return 'Reading build config';
         case 'save_build_config': return 'Saving build config';
         case 'get_diagnostics': return 'Getting diagnostics' + (input.path ? ' for ' + input.path : '');
+        case 'get_rtt_output': return 'Reading RTT log buffer';
         default: return toolName;
     }
 }
@@ -274,15 +279,15 @@ function clearMessages() {
     const container = document.getElementById('chatContainer');
     container.innerHTML = '<div class="empty-state">'
         + '<div class="empty-state-icon"><svg width="32" height="32" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1L9.5 5.5L14 6L10.5 9L11.5 14L8 11.5L4.5 14L5.5 9L2 6L6.5 5.5L8 1Z"/></svg></div>'
-        + '<h2>Code, Build, Debug &amp; Fix</h2>'
-        + '<p class="empty-state-description">I can write code, build your project, debug with GDB, analyze errors, and auto-fix issues — all in one agent.</p>'
+        + '<h2>Code, Build, Flash &amp; Fix</h2>'
+        + '<p class="empty-state-description">I can write code, build, flash via probe-rs, monitor RTT logs, debug with GDB, and auto-fix issues.</p>'
         + '<div class="empty-suggestions" id="emptySuggestions">'
         + '<button class="suggestion-chip" data-prompt="Build the project and fix any errors automatically">&#x1F528; Build &amp; auto-fix errors</button>'
+        + '<button class="suggestion-chip" data-prompt="Build the project, flash it via probe-rs, and monitor RTT output. Check for \'#AI working\' marker to confirm it runs.">&#x1F4E1; Build, flash &amp; monitor RTT</button>'
+        + '<button class="suggestion-chip" data-prompt="Build, flash, and validate the firmware runs. If \'#AI working\' is not seen, analyze the hang and fix the code, then retry.">&#x1F504; Auto build-flash-fix loop</button>'
         + '<button class="suggestion-chip" data-prompt="Show the current build configuration">&#x2699;&#xFE0F; Show build config</button>'
-        + '<button class="suggestion-chip" data-prompt="Build the project, run it, and report the output">&#x25B6;&#xFE0F; Build &amp; run</button>'
         + '<button class="suggestion-chip" data-prompt="Analyze all compiler errors and warnings, then fix them">&#x1F41B; Fix all diagnostics</button>'
         + '<button class="suggestion-chip" data-prompt="Show me the project structure">&#x1F4C1; Show project structure</button>'
-        + '<button class="suggestion-chip" data-prompt="Explain the main entry point of this project">&#x1F4D6; Explain entry point</button>'
         + '</div></div>';
 }
 
@@ -334,28 +339,37 @@ function addBuildStatusBanner(status, cmd, exitCode) {
         'error': '&#x274C;',
         'stopped': '&#x23F9;&#xFE0F;',
         'timeout': '&#x23F3;',
+        'rtt-ok': '&#x2705;',
+        'rtt-timeout': '&#x26A0;&#xFE0F;',
+        'rtt-panic': '&#x1F4A5;',
+        'probe-error': '&#x1F50C;',
         'gdb-connecting': '&#x1F41B;',
         'gdb-connected': '&#x1F7E2;',
         'gdb-error': '&#x274C;'
     };
     var labels = {
         'building': 'Building...',
-        'running': 'Running...',
+        'running': 'Flashing & monitoring RTT...',
         'success': 'Build succeeded',
         'failed': 'Build failed (exit ' + exitCode + ')',
         'error': 'Process error',
         'stopped': 'Process stopped (exit ' + exitCode + ')',
         'timeout': 'Process timed out',
+        'rtt-ok': '#AI working detected — target running!',
+        'rtt-timeout': 'RTT marker not seen — MCU may be hung',
+        'rtt-panic': 'Panic/fault detected in RTT!',
+        'probe-error': 'Probe/USB connection failed — reconnect debugger',
         'gdb-connecting': 'GDB connecting...',
         'gdb-connected': 'GDB connected',
         'gdb-error': 'GDB error'
     };
 
     var isActive = (status === 'building' || status === 'running' || status === 'gdb-connecting');
-    var isError = (status === 'failed' || status === 'error' || status === 'gdb-error');
-    var isSuccess = (status === 'success' || status === 'gdb-connected');
+    var isError = (status === 'failed' || status === 'error' || status === 'gdb-error' || status === 'rtt-panic' || status === 'probe-error');
+    var isSuccess = (status === 'success' || status === 'gdb-connected' || status === 'rtt-ok');
+    var isWarn = (status === 'rtt-timeout');
 
-    banner.className = 'build-status-banner' + (isActive ? ' active' : '') + (isError ? ' error' : '') + (isSuccess ? ' success' : '');
+    banner.className = 'build-status-banner' + (isActive ? ' active' : '') + (isError ? ' error' : '') + (isSuccess ? ' success' : '') + (isWarn ? ' warn' : '');
     banner.innerHTML = '<span class="build-status-icon">' + (icons[status] || '') + '</span> '
         + '<span class="build-status-label">' + (labels[status] || status) + '</span>'
         + (cmd ? ' <span class="build-status-cmd">' + cmd + '</span>' : '');
