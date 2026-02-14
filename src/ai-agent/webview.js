@@ -203,6 +203,14 @@ function formatToolLabel(toolName, input) {
         case 'write_file': return 'Writing ' + (input.path || '');
         case 'execute_command': return 'Running `' + (input.command || '') + '`';
         case 'list_directory': return 'Listing ' + (input.path || '.');
+        case 'build_project': return 'Building project' + (input.command ? ': ' + input.command : '');
+        case 'run_project': return 'Running project' + (input.command ? ': ' + input.command : '');
+        case 'start_gdb': return 'Starting GDB session';
+        case 'send_gdb_command': return 'GDB: ' + (input.command || '');
+        case 'stop_process': return 'Stopping ' + (input.process || 'process');
+        case 'get_build_config': return 'Reading build config';
+        case 'save_build_config': return 'Saving build config';
+        case 'get_diagnostics': return 'Getting diagnostics' + (input.path ? ' for ' + input.path : '');
         default: return toolName;
     }
 }
@@ -266,13 +274,15 @@ function clearMessages() {
     const container = document.getElementById('chatContainer');
     container.innerHTML = '<div class="empty-state">'
         + '<div class="empty-state-icon"><svg width="32" height="32" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1L9.5 5.5L14 6L10.5 9L11.5 14L8 11.5L4.5 14L5.5 9L2 6L6.5 5.5L8 1Z"/></svg></div>'
-        + '<h2>How can I help you?</h2>'
-        + '<p class="empty-state-description">I can answer questions about your embedded project, search files, write code, and run commands.</p>'
+        + '<h2>Code, Build, Debug &amp; Fix</h2>'
+        + '<p class="empty-state-description">I can write code, build your project, debug with GDB, analyze errors, and auto-fix issues — all in one agent.</p>'
         + '<div class="empty-suggestions" id="emptySuggestions">'
-        + '<button class="suggestion-chip" data-prompt="Show me the project structure">Show project structure</button>'
-        + '<button class="suggestion-chip" data-prompt="List all source files in the project">List source files</button>'
-        + '<button class="suggestion-chip" data-prompt="Explain the main entry point of this project">Explain main entry point</button>'
-        + '<button class="suggestion-chip" data-prompt="What build system does this project use?">Identify build system</button>'
+        + '<button class="suggestion-chip" data-prompt="Build the project and fix any errors automatically">&#x1F528; Build &amp; auto-fix errors</button>'
+        + '<button class="suggestion-chip" data-prompt="Show the current build configuration">&#x2699;&#xFE0F; Show build config</button>'
+        + '<button class="suggestion-chip" data-prompt="Build the project, run it, and report the output">&#x25B6;&#xFE0F; Build &amp; run</button>'
+        + '<button class="suggestion-chip" data-prompt="Analyze all compiler errors and warnings, then fix them">&#x1F41B; Fix all diagnostics</button>'
+        + '<button class="suggestion-chip" data-prompt="Show me the project structure">&#x1F4C1; Show project structure</button>'
+        + '<button class="suggestion-chip" data-prompt="Explain the main entry point of this project">&#x1F4D6; Explain entry point</button>'
         + '</div></div>';
 }
 
@@ -299,5 +309,57 @@ window.addEventListener('message', function (event) {
         case 'clearMessages':
             clearMessages();
             break;
+        case 'addBuildStatus':
+            addBuildStatusBanner(message.status, message.cmd, message.exitCode);
+            break;
     }
 });
+
+function addBuildStatusBanner(status, cmd, exitCode) {
+    var container = document.getElementById('chatContainer');
+    if (!container) return;
+
+    // Remove previous status banner if exists
+    var prev = container.querySelector('.build-status-banner');
+    if (prev) prev.remove();
+
+    var banner = document.createElement('div');
+    banner.className = 'build-status-banner';
+
+    var icons = {
+        'building': '&#x1F528;',
+        'running': '&#x25B6;&#xFE0F;',
+        'success': '&#x2705;',
+        'failed': '&#x274C;',
+        'error': '&#x274C;',
+        'stopped': '&#x23F9;&#xFE0F;',
+        'timeout': '&#x23F3;',
+        'gdb-connecting': '&#x1F41B;',
+        'gdb-connected': '&#x1F7E2;',
+        'gdb-error': '&#x274C;'
+    };
+    var labels = {
+        'building': 'Building...',
+        'running': 'Running...',
+        'success': 'Build succeeded',
+        'failed': 'Build failed (exit ' + exitCode + ')',
+        'error': 'Process error',
+        'stopped': 'Process stopped (exit ' + exitCode + ')',
+        'timeout': 'Process timed out',
+        'gdb-connecting': 'GDB connecting...',
+        'gdb-connected': 'GDB connected',
+        'gdb-error': 'GDB error'
+    };
+
+    var isActive = (status === 'building' || status === 'running' || status === 'gdb-connecting');
+    var isError = (status === 'failed' || status === 'error' || status === 'gdb-error');
+    var isSuccess = (status === 'success' || status === 'gdb-connected');
+
+    banner.className = 'build-status-banner' + (isActive ? ' active' : '') + (isError ? ' error' : '') + (isSuccess ? ' success' : '');
+    banner.innerHTML = '<span class="build-status-icon">' + (icons[status] || '') + '</span> '
+        + '<span class="build-status-label">' + (labels[status] || status) + '</span>'
+        + (cmd ? ' <span class="build-status-cmd">' + cmd + '</span>' : '');
+
+    container.appendChild(banner);
+    container.scrollTop = container.scrollHeight;
+}

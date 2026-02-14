@@ -491,3 +491,45 @@ body {
     background: var(--vscode-list-hoverBackground);
     border-color: var(--vscode-focusBorder);
 }
+
+/* ===== Build Status Banner ===== */
+.build-status-banner {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 16px 6px 50px;
+    font-size: 12px;
+    color: var(--vscode-descriptionForeground);
+    animation: fadeIn 0.2s ease;
+    border-left: 3px solid transparent;
+    margin: 2px 0;
+}
+
+.build-status-banner.active {
+    border-left-color: var(--vscode-progressBar-background, #0078d4);
+    background: rgba(0, 120, 212, 0.06);
+}
+
+.build-status-banner.error {
+    border-left-color: var(--vscode-errorForeground, #f48771);
+    background: rgba(244, 135, 113, 0.06);
+}
+
+.build-status-banner.success {
+    border-left-color: #3fb950;
+    background: rgba(63, 185, 80, 0.06);
+}
+
+.build-status-icon {
+    font-size: 13px;
+}
+
+.build-status-label {
+    font-weight: 500;
+}
+
+.build-status-cmd {
+    font-family: var(--vscode-editor-font-family);
+    font-size: 11px;
+    opacity: 0.7;
+}

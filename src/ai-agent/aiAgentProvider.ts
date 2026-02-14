@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import axios from 'axios';
-import { exec } from 'child_process';
+import { exec, spawn, ChildProcess } from 'child_process';
 
 interface Message {
     role: 'user' | 'assistant';
@@ -22,6 +22,15 @@ interface AiConfig {
     authType?: 'anthropic' | 'bearer';
 }
 
+interface BuildConfig {
+    buildCmd: string;
+    runCmd: string;
+    gdbCmd: string;
+    gdbTarget: string;
+    elfPath: string;
+    gdbInitCmds: string;
+}
+
 export class AiAgentProvider {
     private _panel: vscode.WebviewPanel | undefined;
     private _extensionUri: vscode.Uri;
@@ -30,10 +39,27 @@ export class AiAgentProvider {
     private _aiConfig: AiConfig | undefined;
     private _isProcessing = false;
 
+    // Build/Run/Debug process management
+    private _buildProcess: ChildProcess | undefined;
+    private _runProcess: ChildProcess | undefined;
+    private _gdbProcess: ChildProcess | undefined;
+    private _buildOutput: string[] = [];
+    private _runOutput: string[] = [];
+    private _gdbOutput: string[] = [];
+    private _buildConfig: BuildConfig = {
+        buildCmd: 'cargo build',
+        runCmd: 'cargo run',
+        gdbCmd: 'arm-none-eabi-gdb',
+        gdbTarget: 'localhost:3333',
+        elfPath: 'target/thumbv7em-none-eabihf/debug/firmware',
+        gdbInitCmds: 'target remote localhost:3333\nmonitor reset halt\nload\ncontinue'
+    };
+
     constructor(extensionUri: vscode.Uri) {
         this._extensionUri = extensionUri;
         this._workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
         this.loadAiConfig();
+        this.loadBuildConfig();
     }
 
     private loadAiConfig() {
@@ -82,6 +108,9 @@ export class AiAgentProvider {
                     case 'stopGeneration':
                         this._isProcessing = false;
                         this.postMessage({ command: 'setThinking', thinking: false });
+                        break;
+                    case 'quickAction':
+                        await this.handleUserMessage(message.text);
                         break;
                 }
             },
@@ -142,6 +171,7 @@ export class AiAgentProvider {
         }
 
         const tools: Tool[] = [
+            // === Coding Tools ===
             {
                 name: "search_files",
                 description: "Search for files in the workspace by glob pattern. Returns matching file paths.",
@@ -178,7 +208,7 @@ export class AiAgentProvider {
             },
             {
                 name: "execute_command",
-                description: "Execute a shell command and return stdout/stderr output",
+                description: "Execute a shell command and return stdout/stderr output. Use for quick commands. For build, use build_project instead.",
                 input_schema: {
                     type: "object",
                     properties: {
@@ -197,19 +227,131 @@ export class AiAgentProvider {
                     },
                     required: ["path"]
                 }
+            },
+            // === Build/Debug Tools ===
+            {
+                name: "build_project",
+                description: "Build the project using the configured build command. Returns build output (stdout+stderr) and exit code. Use this to compile and check for errors.",
+                input_schema: {
+                    type: "object",
+                    properties: {
+                        command: { type: "string", description: "Optional override build command. If not provided, uses configured build command." }
+                    },
+                    required: []
+                }
+            },
+            {
+                name: "run_project",
+                description: "Run the project using the configured run command. Returns output and exit code. Useful for testing after a successful build.",
+                input_schema: {
+                    type: "object",
+                    properties: {
+                        command: { type: "string", description: "Optional override run command. If not provided, uses configured run command." },
+                        timeout: { type: "number", description: "Timeout in ms (default 30000). Use shorter timeouts for quick tests." }
+                    },
+                    required: []
+                }
+            },
+            {
+                name: "start_gdb",
+                description: "Start a GDB debug session with the configured ELF file and target. Sends init commands and returns initial GDB output.",
+                input_schema: {
+                    type: "object",
+                    properties: {
+                        elfPath: { type: "string", description: "Optional ELF path override" },
+                        initCommands: { type: "string", description: "Optional init commands (newline-separated) override" }
+                    },
+                    required: []
+                }
+            },
+            {
+                name: "send_gdb_command",
+                description: "Send a command to the running GDB session and return output. GDB must be started first with start_gdb.",
+                input_schema: {
+                    type: "object",
+                    properties: {
+                        command: { type: "string", description: "GDB command to send (e.g., 'bt', 'info registers', 'print var')" }
+                    },
+                    required: ["command"]
+                }
+            },
+            {
+                name: "stop_process",
+                description: "Stop a running process (build, run, or gdb)",
+                input_schema: {
+                    type: "object",
+                    properties: {
+                        process: { type: "string", description: "Which process to stop: 'build', 'run', or 'gdb'" }
+                    },
+                    required: ["process"]
+                }
+            },
+            {
+                name: "get_build_config",
+                description: "Get the current build/run/debug configuration (build command, run command, GDB settings, ELF path)",
+                input_schema: {
+                    type: "object",
+                    properties: {},
+                    required: []
+                }
+            },
+            {
+                name: "save_build_config",
+                description: "Update the build/run/debug configuration",
+                input_schema: {
+                    type: "object",
+                    properties: {
+                        buildCmd: { type: "string", description: "Build command (e.g. 'cargo build', 'make')" },
+                        runCmd: { type: "string", description: "Run command (e.g. 'cargo run')" },
+                        gdbCmd: { type: "string", description: "GDB executable (e.g. 'arm-none-eabi-gdb')" },
+                        gdbTarget: { type: "string", description: "GDB target (e.g. 'localhost:3333')" },
+                        elfPath: { type: "string", description: "Path to ELF binary" },
+                        gdbInitCmds: { type: "string", description: "GDB init commands (newline-separated)" }
+                    },
+                    required: []
+                }
+            },
+            {
+                name: "get_diagnostics",
+                description: "Get VS Code diagnostic errors and warnings for a specific file or all files. Useful for finding compiler errors, lint warnings, and type errors.",
+                input_schema: {
+                    type: "object",
+                    properties: {
+                        path: { type: "string", description: "Optional relative file path. If omitted, returns all workspace diagnostics." }
+                    },
+                    required: []
+                }
             }
         ];
 
-        const systemPrompt = `You are an AI coding assistant for embedded development projects in VS Code. You have access to workspace tools.
+        const systemPrompt = `You are an AI-powered coding and debugging agent for embedded development projects in VS Code. You can write code, build, run, debug with GDB, and automatically fix errors.
 
 Current workspace: ${this._workspaceRoot || 'Not set'}
+Build config: ${JSON.stringify(this._buildConfig)}
+
+Capabilities:
+- **Code**: Search, read, write files in the workspace
+- **Build**: Build the project and analyze compiler errors
+- **Run**: Execute the project and capture output
+- **Debug**: Start GDB sessions, set breakpoints, inspect variables
+- **Auto-fix**: Build → analyze errors → fix code → rebuild (iterate until success)
+
+Auto Build-Fix workflow:
+1. Use build_project to compile
+2. If build fails, analyze the error output
+3. Use read_file to see the problematic code
+4. Use write_file to fix the code
+5. Use build_project again to verify the fix
+6. Repeat until build succeeds
 
 Guidelines:
 - Be concise and direct in responses
 - Use tools to gather information before answering
 - Format responses with markdown (code blocks, lists, bold)
 - When writing code, use fenced code blocks with language identifiers
-- Explain what you're doing briefly when using tools`;
+- When asked to build and fix, use the iterative auto-fix loop
+- When debugging, start GDB, get backtrace, read relevant source, then explain
+- Always show what you found and what you changed`;
 
         let continueLoop = true;
         const maxIterations = 15;
@@ -422,6 +564,7 @@ Guidelines:
     private async executeTool(toolName: string, input: any): Promise<string> {
         try {
             switch (toolName) {
+                // Coding tools
                 case 'search_files':
                     return await this.searchFiles(input.pattern);
                 case 'read_file':
@@ -432,6 +575,23 @@ Guidelines:
                     return await this.executeCommand(input.command);
                 case 'list_directory':
                     return await this.listDirectory(input.path);
+                // Build/Debug tools
+                case 'build_project':
+                    return await this.buildProject(input.command);
+                case 'run_project':
+                    return await this.runProject(input.command, input.timeout);
+                case 'start_gdb':
+                    return await this.startGdb(input.elfPath, input.initCommands);
+                case 'send_gdb_command':
+                    return await this.sendGdbCommand(input.command);
+                case 'stop_process':
+                    return this.stopProcess(input.process);
+                case 'get_build_config':
+                    return JSON.stringify(this._buildConfig, null, 2);
+                case 'save_build_config':
+                    return this.saveBuildConfig(input);
+                case 'get_diagnostics':
+                    return await this.getDiagnostics(input.path);
                 default:
                     return `Unknown tool: ${toolName}`;
             }
@@ -439,6 +599,10 @@ Guidelines:
             return `Error: ${error instanceof Error ? error.message : 'Unknown error'}`;
         }
     }
+
+    // ========================================================================
+    // CODING TOOLS
+    // ========================================================================
 
     private async searchFiles(pattern: string): Promise<string> {
         const files = await vscode.workspace.findFiles(pattern, '**/node_modules/**', 100);
@@ -502,6 +666,282 @@ Guidelines:
         }
     }
 
+    private async getDiagnostics(filePath?: string): Promise<string> {
+        let diagnostics: [vscode.Uri, readonly vscode.Diagnostic[]][];
+        
+        if (filePath && this._workspaceRoot) {
+            const uri = vscode.Uri.file(path.join(this._workspaceRoot, filePath));
+            const fileDiags = vscode.languages.getDiagnostics(uri);
+            diagnostics = [[uri, fileDiags]];
+        } else {
+            diagnostics = vscode.languages.getDiagnostics() as [vscode.Uri, readonly vscode.Diagnostic[]][];
+        }
+
+        const results: string[] = [];
+        for (const [uri, diags] of diagnostics) {
+            const filteredDiags = diags.filter(d => 
+                d.severity === vscode.DiagnosticSeverity.Error || 
+                d.severity === vscode.DiagnosticSeverity.Warning
+            );
+            if (filteredDiags.length === 0) { continue; }
+            
+            const relPath = vscode.workspace.asRelativePath(uri);
+            for (const d of filteredDiags) {
+                const severity = d.severity === vscode.DiagnosticSeverity.Error ? 'ERROR' : 'WARN';
+                results.push(`${relPath}:${d.range.start.line + 1}:${d.range.start.character + 1} [${severity}] ${d.message}`);
+            }
+        }
+
+        if (results.length === 0) {
+            return 'No errors or warnings found.';
+        }
+        return results.join('\n');
+    }
+
+    // ========================================================================
+    // BUILD / RUN / DEBUG TOOLS
+    // ========================================================================
+
+    private async buildProject(command?: string): Promise<string> {
+        const cwd = this._workspaceRoot || process.cwd();
+        const cmd = command || this._buildConfig.buildCmd;
+        
+        // Kill any existing build
+        this._killProcess(this._buildProcess);
+        this._buildOutput = [];
+
+        this.postMessage({ command: 'addBuildStatus', status: 'building', cmd });
+
+        return new Promise((resolve) => {
+            const parts = cmd.split(/\s+/);
+            this._buildProcess = spawn(parts[0], parts.slice(1), {
+                cwd,
+                shell: true,
+                env: { ...process.env }
+            });
+
+            this._buildProcess.stdout?.on('data', (data: Buffer) => {
+                this._buildOutput.push(data.toString());
+            });
+
+            this._buildProcess.stderr?.on('data', (data: Buffer) => {
+                this._buildOutput.push(data.toString());
+            });
+
+            this._buildProcess.on('close', (code: number | null) => {
+                const exitCode = code ?? -1;
+                const output = this._buildOutput.join('');
+                const status = exitCode === 0 ? 'success' : 'failed';
+                this.postMessage({ command: 'addBuildStatus', status, exitCode });
+                
+                let result = `Build ${status} (exit code ${exitCode})`;
+                if (output) {
+                    result += '\n\n' + (output.length > 8000 ? output.substring(0, 8000) + '\n... [truncated]' : output);
+                }
+                resolve(result);
+            });
+
+            this._buildProcess.on('error', (err: Error) => {
+                this.postMessage({ command: 'addBuildStatus', status: 'error' });
+                resolve(`Build error: ${err.message}`);
+            });
+        });
+    }
+
+    private async runProject(command?: string, timeout?: number): Promise<string> {
+        const cwd = this._workspaceRoot || process.cwd();
+        const cmd = command || this._buildConfig.runCmd;
+        const timeoutMs = timeout || 30000;
+
+        this._killProcess(this._runProcess);
+        this._runOutput = [];
+
+        this.postMessage({ command: 'addBuildStatus', status: 'running', cmd });
+
+        return new Promise((resolve) => {
+            const parts = cmd.split(/\s+/);
+            this._runProcess = spawn(parts[0], parts.slice(1), {
+                cwd,
+                shell: true,
+                env: { ...process.env }
+            });
+
+            const timer = setTimeout(() => {
+                this._killProcess(this._runProcess);
+                const output = this._runOutput.join('');
+                this.postMessage({ command: 'addBuildStatus', status: 'timeout' });
+                resolve(`Run timed out after ${timeoutMs}ms\n\nOutput:\n${output}`);
+            }, timeoutMs);
+
+            this._runProcess.stdout?.on('data', (data: Buffer) => {
+                this._runOutput.push(data.toString());
+            });
+
+            this._runProcess.stderr?.on('data', (data: Buffer) => {
+                this._runOutput.push(data.toString());
+            });
+
+            this._runProcess.on('close', (code: number | null) => {
+                clearTimeout(timer);
+                const exitCode = code ?? -1;
+                const output = this._runOutput.join('');
+                const status = exitCode === 0 ? 'stopped' : 'error';
+                this.postMessage({ command: 'addBuildStatus', status, exitCode });
+                
+                let result = `Process exited (code ${exitCode})`;
+                if (output) {
+                    result += '\n\n' + (output.length > 8000 ? output.substring(0, 8000) + '\n... [truncated]' : output);
+                }
+                resolve(result);
+            });
+
+            this._runProcess.on('error', (err: Error) => {
+                clearTimeout(timer);
+                this.postMessage({ command: 'addBuildStatus', status: 'error' });
+                resolve(`Run error: ${err.message}`);
+            });
+        });
+    }
+
+    private async startGdb(elfPath?: string, initCommands?: string): Promise<string> {
+        const cwd = this._workspaceRoot || process.cwd();
+        const elf = elfPath || this._buildConfig.elfPath;
+        const initCmds = (initCommands || this._buildConfig.gdbInitCmds).split('\\n');
+        
+        this._killProcess(this._gdbProcess);
+        this._gdbOutput = [];
+
+        this.postMessage({ command: 'addBuildStatus', status: 'gdb-connecting' });
+
+        return new Promise((resolve) => {
+            this._gdbProcess = spawn(this._buildConfig.gdbCmd, [elf], {
+                cwd,
+                shell: true,
+                env: { ...process.env }
+            });
+
+            this._gdbProcess.stdout?.on('data', (data: Buffer) => {
+                this._gdbOutput.push(data.toString());
+            });
+
+            this._gdbProcess.stderr?.on('data', (data: Buffer) => {
+                this._gdbOutput.push(data.toString());
+            });
+
+            this._gdbProcess.on('error', (err: Error) => {
+                this.postMessage({ command: 'addBuildStatus', status: 'gdb-error' });
+                resolve(`GDB error: ${err.message}`);
+            });
+
+            // Send init commands after brief delay
+            setTimeout(() => {
+                if (this._gdbProcess && this._gdbProcess.stdin) {
+                    initCmds.forEach((cmd, i) => {
+                        setTimeout(() => {
+                            this._gdbProcess?.stdin?.write(cmd.trim() + '\n');
+                        }, i * 300);
+                    });
+                }
+
+                // Collect output after init commands
+                setTimeout(() => {
+                    const output = this._gdbOutput.join('');
+                    this.postMessage({ command: 'addBuildStatus', status: 'gdb-connected' });
+                    resolve(`GDB session started\nInit commands sent: ${initCmds.join(', ')}\n\nOutput:\n${output}`);
+                }, initCmds.length * 300 + 500);
+            }, 500);
+        });
+    }
+
+    private async sendGdbCommand(command: string): Promise<string> {
+        if (!this._gdbProcess || !this._gdbProcess.stdin) {
+            return 'GDB is not running. Use start_gdb first.';
+        }
+
+        const prevLen = this._gdbOutput.length;
+        this._gdbProcess.stdin.write(command + '\n');
+
+        // Wait for output
+        return new Promise((resolve) => {
+            setTimeout(() => {
+                const newOutput = this._gdbOutput.slice(prevLen).join('');
+                resolve(newOutput || `(gdb) ${command}\n(no output)`);
+            }, 1500);
+        });
+    }
+
+    private stopProcess(processName: string): string {
+        switch (processName) {
+            case 'build':
+                this._killProcess(this._buildProcess);
+                this._buildProcess = undefined;
+                return 'Build process stopped.';
+            case 'run':
+                this._killProcess(this._runProcess);
+                this._runProcess = undefined;
+                return 'Run process stopped.';
+            case 'gdb':
+                if (this._gdbProcess?.stdin) {
+                    this._gdbProcess.stdin.write('quit\n');
+                }
+                setTimeout(() => {
+                    this._killProcess(this._gdbProcess);
+                    this._gdbProcess = undefined;
+                }, 500);
+                return 'GDB session terminated.';
+            default:
+                return `Unknown process: ${processName}. Use 'build', 'run', or 'gdb'.`;
+        }
+    }
+
+    private _killProcess(proc: ChildProcess | undefined): void {
+        if (proc && !proc.killed) {
+            try {
+                proc.kill('SIGTERM');
+                setTimeout(() => {
+                    if (!proc.killed) {
+                        proc.kill('SIGKILL');
+                    }
+                }, 1000);
+            } catch {
+                // Process may already be dead
+            }
+        }
+    }
+
+    // ========================================================================
+    // BUILD CONFIG MANAGEMENT
+    // ========================================================================
+
+    private loadBuildConfig(): void {
+        try {
+            const configPath = path.join(this._extensionUri.fsPath, 'debug-config.json');
+            if (fs.existsSync(configPath)) {
+                const data = fs.readFileSync(configPath, 'utf-8');
+                this._buildConfig = { ...this._buildConfig, ...JSON.parse(data) };
+            }
+        } catch (error) {
+            console.error('Failed to load debug-config.json:', error);
+        }
+    }
+
+    private saveBuildConfig(input: any): string {
+        if (input.buildCmd) { this._buildConfig.buildCmd = input.buildCmd; }
+        if (input.runCmd) { this._buildConfig.runCmd = input.runCmd; }
+        if (input.gdbCmd) { this._buildConfig.gdbCmd = input.gdbCmd; }
+        if (input.gdbTarget) { this._buildConfig.gdbTarget = input.gdbTarget; }
+        if (input.elfPath) { this._buildConfig.elfPath = input.elfPath; }
+        if (input.gdbInitCmds) { this._buildConfig.gdbInitCmds = input.gdbInitCmds; }
+
+        try {
+            const configPath = path.join(this._extensionUri.fsPath, 'debug-config.json');
+            fs.writeFileSync(configPath, JSON.stringify(this._buildConfig, null, 2));
+            return `Build config saved:\n${JSON.stringify(this._buildConfig, null, 2)}`;
+        } catch (error) {
+            return `Config updated in memory but save failed: ${error}`;
+        }
+    }
+
     private clearChat() {
         this._messages = [];
         this._isProcessing = false;
@@ -544,13 +984,15 @@ Guidelines:
             <div class="empty-state-icon">
                 <svg width="32" height="32" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1L9.5 5.5L14 6L10.5 9L11.5 14L8 11.5L4.5 14L5.5 9L2 6L6.5 5.5L8 1Z"/></svg>
             </div>
-            <h2>How can I help you?</h2>
-            <p class="empty-state-description">I can answer questions about your embedded project, search files, write code, and run commands.</p>
+            <h2>Code, Build, Debug & Fix</h2>
+            <p class="empty-state-description">I can write code, build your project, debug with GDB, analyze errors, and auto-fix issues — all in one agent.</p>
             <div class="empty-suggestions" id="emptySuggestions">
-                <button class="suggestion-chip" data-prompt="Show me the project structure">Show project structure</button>
-                <button class="suggestion-chip" data-prompt="List all source files in the project">List source files</button>
-                <button class="suggestion-chip" data-prompt="Explain the main entry point of this project">Explain main entry point</button>
-                <button class="suggestion-chip" data-prompt="What build system does this project use?">Identify build system</button>
+                <button class="suggestion-chip" data-prompt="Build the project and fix any errors automatically">&#x1F528; Build &amp; auto-fix errors</button>
+                <button class="suggestion-chip" data-prompt="Show the current build configuration">&#x2699;&#xFE0F; Show build config</button>
+                <button class="suggestion-chip" data-prompt="Build the project, run it, and report the output">&#x25B6;&#xFE0F; Build &amp; run</button>
+                <button class="suggestion-chip" data-prompt="Analyze all compiler errors and warnings, then fix them">&#x1F41B; Fix all diagnostics</button>
+                <button class="suggestion-chip" data-prompt="Show me the project structure">&#x1F4C1; Show project structure</button>
+                <button class="suggestion-chip" data-prompt="Explain the main entry point of this project">&#x1F4D6; Explain entry point</button>
             </div>
         </div>
     </div>
